@@ -1,0 +1,11 @@
+{
+  "filter": {
+    "name": "Rib Layout",
+    "expr": "NAME == \"inf_rl_*\""
+  },
+  "layers": {
+    "inf_rl_ribs":      { "color": 3, "lineweight": "default", "linetype": "Continuous" },
+    "inf_rl_gabion_3d": { "color": 8, "lineweight": 0.13,      "linetype": "DASHED" },
+    "inf_rl_anno":      { "color": 7, "lineweight": "default", "linetype": "Continuous" }
+  }
+}

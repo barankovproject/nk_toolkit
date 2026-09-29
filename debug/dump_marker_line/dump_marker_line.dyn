@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump user-drawn 3D lines/polylines on inf_md_marker: geometry, slope, station/offset.\n\nThe user drew the desired ditch axis by hand at a problem station. This reads every\nLine / Polyline3d / Polyline on inf_md_marker, logs its vertices (x,y,z), 2D length,\nlongitudinal slope (dz / 2D-length), bearing, and projects both ends onto the active\nalignment to get their station + offset — so we can see exactly what orientation and\nend points achieve the OK slope, vs what the solver produces.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport math\nimport os\nimport sys\nimport traceback\n\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Line,\n    Polyline,\n    Polyline3d,\n    SymbolUtilityServices,\n)\n\n_SCRIPTS_ROOT = r\"C:\\Arhyz\\automation\\scripts\\ditch\"\nif _SCRIPTS_ROOT not in sys.path:\n    sys.path.insert(0, _SCRIPTS_ROOT)\n_AUTOMATION = r\"C:\\Arhyz\\automation\"\nif _AUTOMATION not in sys.path:\n    sys.path.insert(0, _AUTOMATION)\n\nfrom ditch_core.config import CONFIG\nfrom ditch_core.selection import find_alignment_and_surface\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_marker_line\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_marker_line_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\nMARKER_LAYER = \"inf_md_marker\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef _verts(ent, tx):\n    pts = []\n    if isinstance(ent, Line):\n        s, e = ent.StartPoint, ent.EndPoint\n        pts = [(s.X, s.Y, s.Z), (e.X, e.Y, e.Z)]\n    elif isinstance(ent, Polyline3d):\n        for vid in ent:\n            v = tx.GetObject(vid, OpenMode.ForRead)\n            p = v.Position\n            pts.append((p.X, p.Y, p.Z))\n    elif isinstance(ent, Polyline):\n        for i in range(ent.NumberOfVertices):\n            p = ent.GetPoint3dAt(i)\n            pts.append((p.X, p.Y, p.Z))\n    return pts\n\n\ndef _station_offset(align, x, y):\n    try:\n        res = align.StationOffsetAcceptOutOfRange(x, y, 0.0, 0.0, False)\n        if isinstance(res, tuple) and len(res) \u003e= 3:\n            return float(res[-3]), float(res[-2])\n    except Exception:\n        pass\n    try:\n        res = align.StationOffset(x, y, 0.0, 0.0)\n        if isinstance(res, tuple) and len(res) \u003e= 2:\n            return float(res[-2]), float(res[-1])\n    except Exception:\n        pass\n    return None, None\n\n\ndef _safe_elev(surface, x, y):\n    try:\n        return float(surface.FindElevationAtXY(x, y))\n    except Exception:\n        return None\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlog(f\"=== dump_marker_line {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\")\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        align, surface = find_alignment_and_surface(\n            tx, CONFIG.alignment_name, CONFIG.surface_name\n        )\n        log(f\"alignment \u0027{align.Name}\u0027, surface \u0027{surface.Name}\u0027\")\n\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead\n        )\n        found = 0\n        for oid in ms:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n            try:\n                layer = ent.Layer\n            except Exception:\n                continue\n            if layer != MARKER_LAYER:\n                continue\n            if not isinstance(ent, (Line, Polyline3d, Polyline)):\n                log(\n                    f\"\\n[{type(ent).__name__}] on {layer}: not a line/polyline, skipped\"\n                )\n                continue\n            pts = _verts(ent, tx)\n            if len(pts) \u003c 2:\n                continue\n            found += 1\n            log(\"\")\n            log(\"-\" * 70)\n            log(f\"#{found} {type(ent).__name__} on {layer}, {len(pts)} vertices\")\n            for i, (x, y, z) in enumerate(pts):\n                sta, off = _station_offset(align, x, y)\n                surf_z = _safe_elev(surface, x, y)\n                sta_s = f\"{sta:.2f}\" if sta is not None else \"None\"\n                off_s = f\"{off:+.2f}\" if off is not None else \"None\"\n                sz_s = f\"{surf_z:.2f}\" if surf_z is not None else \"None\"\n                log(\n                    f\"  v{i}: ({x:.2f},{y:.2f}, z={z:.3f})  station={sta_s} \"\n                    f\"offset={off_s}  surface_z={sz_s}\"\n                )\n            a, b = pts[0], pts[-1]\n            len2d = math.hypot(b[0] - a[0], b[1] - a[1])\n            len3d = math.sqrt(\n                (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2\n            )\n            dz = a[2] - b[2]\n            slope = abs(dz) / len2d if len2d \u003e 1e-6 else float(\"nan\")\n            bearing = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))\n            sta_a, _ = _station_offset(align, a[0], a[1])\n            sta_b, _ = _station_offset(align, b[0], b[1])\n            d_sta = (\n                (sta_b - sta_a)\n                if (sta_a is not None and sta_b is not None)\n                else float(\"nan\")\n            )\n            log(\n                f\"  end-to-end: len2d={len2d:.2f} len3d={len3d:.2f} dz={dz:+.3f} \"\n                f\"slope={slope:.4f}\"\n            )\n            log(\n                f\"  bearing={bearing:.1f}deg  d_station(end-start)={d_sta:+.2f} \"\n                f\"(how far along the trasse the far end sits)\"\n            )\n            # skew vs the alignment normal at the start station\n            try:\n                from civil.alignment import AlignmentWrapper\n\n                aw = AlignmentWrapper(align, float(align.EndingStation))\n                if sta_a is not None:\n                    nx, ny = aw.cross_axis_at(\n                        max(\n                            float(align.StartingStation),\n                            min(float(align.EndingStation), sta_a),\n                        )\n                    )\n                    dx, dy = (b[0] - a[0]), (b[1] - a[1])\n                    dn = math.hypot(dx, dy)\n                    if dn \u003e 1e-6:\n                        cosang = abs((dx * nx + dy * ny) / dn)\n                        cosang = max(-1.0, min(1.0, cosang))\n                        skew = math.degrees(math.acos(cosang))\n                        log(f\"  skew from axis-normal at start: ~{skew:.1f}deg\")\n            except Exception as e:\n                log(f\"  (skew calc failed: {e})\")\n\n        log(f\"\\nfound {found} marker line(s) on {MARKER_LAYER}\")\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

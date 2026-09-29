@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump manually-placed gabion callout blocks \"321\" for the callout test-set canals.\n\nFor every \"321\" block belonging to each canal, writes one CSV per canal (out/\u003cname\u003e.csv)\nwith the full parameter set needed to compare against draw_gabion_view:\nstation, offset, nearest section point (key + idx + planar distance), insertion XYZ,\nscale, rotation, Положение1 X/Y, flip (Отраженное состояние1), attribute texts, layer.\n\nCSV chosen over .xlsx so the in-Civil CPython needs no extra libs; convert to .xlsx\nafterwards. Section_points come from the canal data JSON (to tag idx 6/7 = top of wall).\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, csv, datetime, math, os, sys, traceback\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    BlockReference,\n    OpenMode,\n    SymbolUtilityServices,\n)\nfrom Autodesk.Civil.ApplicationServices import CivilApplication\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\n\nimport json  # noqa: E402\n\nfrom civil.utils import find_best_match, normalize  # noqa: E402\nfrom paths import CANALS_DATA_DIR  # noqa: E402\n\nBASE = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_callout_blocks\"\nLOG_DIR = os.path.join(BASE, \"logs\")\nOUT_DIR = os.path.join(BASE, \"out\")\nos.makedirs(LOG_DIR, exist_ok=True)\nos.makedirs(OUT_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_callout_blocks_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n# new offset-rail / \"паучок\" pattern reference set (manually placed)\nQUERIES = [\n    \"НК-1A-5\",\n    \"НК-1A-6\",\n    \"НК-1A-7\",\n    \"НК-2B-1\",\n    \"НК-3С-1\",\n]\nBLOCK_NAME = \"point_number\"\n\nCSV_COLS = [\n    \"station\",\n    \"offset\",\n    \"sec_key\",\n    \"sec_idx\",\n    \"sec_dist\",\n    \"ins_x\",\n    \"ins_y\",\n    \"ins_z\",\n    \"scale\",\n    \"rotation_deg\",\n    \"pos1x\",\n    \"pos1y\",\n    \"flip\",\n    \"label\",\n    \"layer\",\n]\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef effective_name(br, tx):\n    try:\n        if br.IsDynamicBlock:\n            return tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead).Name\n    except Exception:\n        pass\n    return tx.GetObject(br.BlockTableRecord, OpenMode.ForRead).Name\n\n\ndef station_offset(align, x, y):\n    try:\n        res = align.StationOffset(x, y, 0.0, 0.0)\n        if isinstance(res, tuple) and len(res) \u003e= 2:\n            return float(res[-2]), float(res[-1])\n    except Exception:\n        pass\n    return None, None\n\n\ndef find_alignment(tx, civil_db, query):\n    objs, names = [], []\n    for oid in civil_db.GetAlignmentIds():\n        try:\n            a = tx.GetObject(oid, OpenMode.ForRead)\n            objs.append(a)\n            names.append(a.Name)\n        except Exception:\n            continue\n    res = find_best_match(query, names)\n    if res is None:\n        return None, None\n    return objs[res[0]], res[1]\n\n\ndef load_flat_sections(query):\n    norm = normalize(query)\n    path = None\n    for fname in os.listdir(CANALS_DATA_DIR):\n        if fname.endswith(\".json\") and normalize(fname[:-5]) == norm:\n            path = os.path.join(CANALS_DATA_DIR, fname)\n            break\n    if path is None:\n        return []\n    with open(path, encoding=\"utf-8-sig\") as f:\n        sp = json.load(f).get(\"section_points\", {})\n    flat = []\n    for key, pts in sp.items():\n        for idx, p in enumerate(pts):\n            flat.append((key, idx, float(p[0]), float(p[1])))\n    return flat\n\n\ndef nearest(x, y, flat):\n    best = None\n    for key, idx, px, py in flat:\n        d = math.hypot(px - x, py - y)\n        if best is None or d \u003c best[2]:\n            best = (key, idx, d)\n    return best\n\n\n# A callout\u0027s insertion sits on the top-of-wall corner, ~1 m off its own alignment\n# (up to ~2.7 m in a widening). A block on a neighbouring canal is many metres off,\n# so assign each block to the alignment with the smallest |offset| within this cap.\nMAX_OFFSET = 3.5\n\n\ndef block_params(obj, tx, sta, off, flat):\n    pos = obj.Position\n    near = nearest(pos.X, pos.Y, flat) if flat else None\n    dyn = {}\n    try:\n        for prop in obj.DynamicBlockReferencePropertyCollection:\n            dyn[prop.PropertyName] = prop.Value\n    except Exception:\n        pass\n    attrs = {}\n    try:\n        for aoid in obj.AttributeCollection:\n            att = tx.GetObject(aoid, OpenMode.ForRead)\n            attrs[att.Tag] = att.TextString\n    except Exception:\n        pass\n    sc = obj.ScaleFactors\n    return {\n        \"station\": round(sta, 3),\n        \"offset\": round(off, 3),\n        \"sec_key\": near[0] if near else \"\",\n        \"sec_idx\": near[1] if near else \"\",\n        \"sec_dist\": round(near[2], 4) if near else \"\",\n        \"ins_x\": round(pos.X, 4),\n        \"ins_y\": round(pos.Y, 4),\n        \"ins_z\": round(pos.Z, 4),\n        \"scale\": round(float(sc.X), 4),\n        \"rotation_deg\": round(math.degrees(obj.Rotation), 3),\n        \"pos1x\": dyn.get(\"Положение1 X\", \"\"),\n        \"pos1y\": dyn.get(\"Положение1 Y\", \"\"),\n        \"flip\": dyn.get(\"Отраженное состояние1\", \"\"),\n        \"label\": next(iter(attrs.values()), \"\"),  # т.N point-number text\n        \"layer\": obj.Layer,\n    }\n\n\ndef dump_all(tx, db, civil_db):\n    canals = []  # (query, align, name, sta_end, flat)\n    for q in QUERIES:\n        align, name = find_alignment(tx, civil_db, q)\n        if align is None:\n            log(f\"{q}: alignment not found, skipped\")\n            continue\n        canals.append(\n            (q, align, name, float(align.EndingStation), load_flat_sections(q))\n        )\n\n    buckets = {c[2]: [] for c in canals}\n    unassigned = 0\n    ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n    for oid in ms:\n        try:\n            obj = tx.GetObject(oid, OpenMode.ForRead)\n        except Exception:\n            continue\n        if not isinstance(obj, BlockReference) or effective_name(obj, tx) != BLOCK_NAME:\n            continue\n        pos = obj.Position\n        best = None  # (abs_off, name, sta, off, flat)\n        for _q, align, name, sta_end, flat in canals:\n            sta, off = station_offset(align, pos.X, pos.Y)\n            if sta is None or not (-1.0 \u003c= sta \u003c= sta_end + 1.0):\n                continue\n            if abs(off) \u003c= MAX_OFFSET and (best is None or abs(off) \u003c best[0]):\n                best = (abs(off), name, sta, off, flat)\n        if best is None:\n            unassigned += 1\n            continue\n        buckets[best[1]].append(block_params(obj, tx, best[2], best[3], best[4]))\n\n    for _q, _align, name, _se, _flat in canals:\n        rows = sorted(buckets[name], key=lambda r: r[\"station\"])\n        out_path = os.path.join(OUT_DIR, f\"{name}.csv\")\n        with open(out_path, \"w\", encoding=\"utf-8-sig\", newline=\"\") as f:\n            w = csv.DictWriter(f, fieldnames=CSV_COLS, delimiter=\";\")\n            w.writeheader()\n            w.writerows(rows)\n        log(f\"\u0027{name}\u0027: {len(rows)} callout blocks -\u003e {out_path}\")\n    log(f\"unassigned 321 blocks (|offset|\u003e{MAX_OFFSET} on all canals): {unassigned}\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ncivil_db = CivilApplication.ActiveDocument\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(\"=== CALLOUT PARAM DUMP ===\")\n        dump_all(tx, db, civil_db)\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

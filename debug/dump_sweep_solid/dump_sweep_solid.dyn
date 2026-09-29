@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "c3d4e5f6-a7b8-9012-cdef-234567890123",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_sweep_solid",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump: does Solid3d.CreateSweptSolid handle a WIDE cross-section (~top_w) swept\nalong a curved arc path whose radius is comparable to that width -- the exact\nscale that made Solid3d.CreateLoftedSolid(..., pathCurve, ...) throw\n`eGeneralModelingFailure` on build_gsi_kv_trapezoid_faceted\u0027s В-5А-2 sharp PI\n(top_w~9.4m, R~10.36m, defl~38.7 deg), regardless of how many intermediate\ncross-sections were also passed. CreateSweptSolid is a different ACIS\noperation (SWEEP, one profile carried along a path) from CreateLoftedSolid\n(LOFT, blends between 2+ profiles) -- testing whether it tolerates this scale\nwhere the loft-with-path approach did not.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport datetime\nimport math\nimport os\nimport traceback\n\nimport clr\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    DBObjectCollection,\n    Line,\n    OpenMode,\n    Poly3dType,\n    Polyline3d,\n    Region,\n    Solid3d,\n    SweepOptionsAlignOption,\n    SweepOptionsBuilder,\n    SymbolUtilityServices,\n)\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.Geometry import Point3d, Point3dCollection\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_sweep_solid\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_sweep_solid_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef make_region(pts, ms, tx):\n    n = len(pts)\n    lines = []\n    for i in range(n):\n        ln = Line(pts[i], pts[(i + 1) % n])\n        ms.AppendEntity(ln)\n        tx.AddNewlyCreatedDBObject(ln, True)\n        lines.append(ln)\n    col = DBObjectCollection()\n    for ln in lines:\n        col.Add(ln)\n    region_col = Region.CreateFromCurves(col)\n    region = region_col[0]\n    ms.AppendEntity(region)\n    tx.AddNewlyCreatedDBObject(region, True)\n    for ln in lines:\n        ln.Erase()\n    return region\n\n\ndef try_sweep(label, ms, tx, region, path_ent, align, bank):\n    log(f\"--- attempt: {label} (align={align}, bank={bank}) ---\")\n    try:\n        builder = SweepOptionsBuilder()\n        builder.Align = align\n        builder.Bank = bank\n        opts = builder.ToSweepOptions()\n        solid = Solid3d()\n        solid.CreateSweptSolid(region, path_ent, opts)\n        vol = None\n        try:\n            vol = float(solid.MassProperties.Volume)\n        except Exception as ve:\n            log(f\"  MassProperties.Volume failed: {ve}\")\n        ms.AppendEntity(solid)\n        tx.AddNewlyCreatedDBObject(solid, True)\n        log(f\"  SUCCESS: solid created, volume={vol}\")\n        return True\n    except Exception as e:\n        log(f\"  FAILED: {type(e).__name__}: {e}\")\n        log(traceback.format_exc())\n        return False\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlog(f\"=== dump_sweep_solid {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\")\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite\n        )\n\n        R = 10.356\n        phi = math.radians(38.7)\n        half_w = 9.414 / 2.0\n        depth = 1.0\n        n_samples = 30\n\n        def build_case(base_y, align, bank):\n            cx, cy = 0.0, base_y\n            start_ang = 0.0\n            path_pts = Point3dCollection()\n            for i in range(n_samples + 1):\n                ang = start_ang + phi * i / n_samples\n                path_pts.Add(\n                    Point3d(cx + R * math.cos(ang), cy + R * math.sin(ang), 0.0)\n                )\n            path_ent = Polyline3d(Poly3dType.SimplePoly, path_pts, False)\n            ms.AppendEntity(path_ent)\n            tx.AddNewlyCreatedDBObject(path_ent, True)\n\n            lx0, ly0 = math.cos(start_ang), math.sin(start_ang)\n            x0, y0 = cx + R * lx0, cy + R * ly0\n            p0 = Point3d(x0 - half_w * lx0, y0 - half_w * ly0, 0.0)\n            p1 = Point3d(x0 + half_w * lx0, y0 + half_w * ly0, 0.0)\n            p2 = Point3d(x0 + half_w * lx0, y0 + half_w * ly0, depth)\n            p3 = Point3d(x0 - half_w * lx0, y0 - half_w * ly0, depth)\n            region = make_region([p0, p1, p2, p3], ms, tx)\n\n            return try_sweep(\n                f\"R={R} half_w={half_w} phi_deg=38.7\",\n                ms,\n                tx,\n                region,\n                path_ent,\n                align,\n                bank,\n            )\n\n        ok1 = build_case(0.0, SweepOptionsAlignOption.AlignSweepEntityToPath, True)\n        ok2 = build_case(30.0, SweepOptionsAlignOption.AlignSweepEntityToPath, False)\n        ok3 = build_case(60.0, SweepOptionsAlignOption.NoAlignment, False)\n\n        log(\"\")\n        log(\n            f\"summary: AlignToPath+Bank={ok1} AlignToPath+NoBank={ok2} NoAlignment={ok3}\"\n        )\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "c3d4e5f6a7b890124cdef2345678901",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "a7b8c9d0e1f23456abcd345678901232",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "c3d4e5f6a7b890124cdef2345678901",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

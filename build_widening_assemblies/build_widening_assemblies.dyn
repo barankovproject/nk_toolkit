@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "e5f6a7b8-c9d0-1234-efab-567890123456",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "build_widening_assemblies",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Bootstrap script — creates the 13 widening Assembly variants in Civil 3D.\n\nFor every entry in WIDENING_VARIANTS:\n  1. Skip if target Assembly already exists in the drawing\n  2. DeepCloneObjects the base Assembly into the same owner\n  3. Rename clone to the widening name\n  4. Translate clone by (+600 + idx*100, 0, 0) — idx counts per-base-type variants\n  5. Set ParamsDouble[0].Value (bw) to the widening b\n\nIdempotent — re-running only creates the missing variants. To regenerate any\nof them, erase that Assembly in the drawing first.\n\nNaming follows existing assembly convention: \u003cbw_mm\u003ex\u003cd_mm\u003e_\u003ct_mm\u003e.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport os\nimport sys\nimport traceback\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import IdMapping, ObjectIdCollection, OpenMode\nfrom Autodesk.AutoCAD.Geometry import Matrix3d, Vector3d\nfrom Autodesk.Civil.ApplicationServices import CivilApplication\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\n_AUTOMATION_ROOT = os.path.dirname(_LIB_ROOT)\nfor _p in (_LIB_ROOT, _AUTOMATION_ROOT):\n    if _p not in sys.path:\n        sys.path.insert(0, _p)\n\nfrom civil.utils import safe_iter, safe_resolve  # noqa: E402\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\build_widening_assemblies\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"build_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n# Per-base offset rules (matches user spec)\nX_OFFSET_FIRST = 600.0\nX_OFFSET_STEP = 100.0\n\n# (base_assembly_name, new_assembly_name, new_bw_metres)\n# Order within each base group determines X offset (first → +600, then +100 each).\nWIDENING_VARIANTS: list[tuple[str, str, float]] = [\n    (\"500x500_170\", \"2000x500_170\", 2.0),\n    (\"500x500_170\", \"5000x500_170\", 5.0),\n    (\"600x600_170\", \"3000x600_170\", 3.0),\n    (\"600x600_170\", \"5000x600_170\", 5.0),\n    (\"750x750_300\", \"3000x750_300\", 3.0),\n    (\"750x750_300\", \"10000x750_300\", 10.0),\n    (\"1500x750_170 (2)\", \"3000x750_170\", 3.0),\n    (\"1500x750_170 (2)\", \"5000x750_170\", 5.0),\n    (\"1500x750_500\", \"5000x750_500\", 5.0),\n    (\"1500x750_500\", \"6000x750_500\", 6.0),\n    (\"1500x750_500\", \"10000x750_500\", 10.0),  # shared with type 6\n    (\"7000x1500_500\", \"15000x1500_500\", 15.0),\n    (\"10000x2000_500\", \"25000x2000_500\", 25.0),\n]\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef find_assembly(ac, tx, name: str):\n    \"\"\"Return (ObjectId, Assembly) for the named assembly, or (None, None).\"\"\"\n    for raw in safe_iter(ac):\n        asm = safe_resolve(raw, tx)\n        if asm is None:\n            continue\n        try:\n            if asm.Name == name:\n                return raw, asm\n        except Exception:\n            continue\n    return None, None\n\n\ndef gabion_subassembly_id(asm, tx):\n    \"\"\"Return the ObjectId of the non-Daylight subassembly inside `asm`, or None.\"\"\"\n    for raw_g in safe_iter(asm.Groups):\n        g = safe_resolve(raw_g, tx)\n        if g is None:\n            continue\n        for sid in safe_iter(g.GetSubassemblyIds()):\n            sub = safe_resolve(sid, tx)\n            if sub is None:\n                continue\n            if not str(sub.Name).lower().startswith(\"daylight\"):\n                return sid\n    return None\n\n\ndef build_one(\n    ac, tx, db, base_name: str, new_name: str, new_bw: float, x_offset: float\n) -\u003e str:\n    \"\"\"Build one widening variant. Returns status string for the log.\"\"\"\n    # 1. Skip if target already exists\n    existing_id, _ = find_assembly(ac, tx, new_name)\n    if existing_id is not None:\n        return \"SKIP (already exists)\"\n\n    # 2. Find source base assembly\n    src_id, src = find_assembly(ac, tx, base_name)\n    if src is None:\n        return f\"FAIL: base \u0027{base_name}\u0027 not found\"\n\n    # 3. DeepClone\n    ids = ObjectIdCollection()\n    ids.Add(src_id)\n    mapping = IdMapping()\n    try:\n        db.DeepCloneObjects(ids, src.OwnerId, mapping, False)\n    except Exception as e:\n        return f\"FAIL DeepClone: {type(e).__name__}: {e}\"\n\n    clone_id = None\n    for record in mapping:\n        if record.Key == src_id:\n            clone_id = record.Value\n            break\n    if clone_id is None:\n        return \"FAIL: no IdMapping entry for source\"\n\n    # 4. Rename + translate\n    clone_w = tx.GetObject(clone_id, OpenMode.ForWrite)\n    try:\n        clone_w.Name = new_name\n    except Exception as e:\n        return f\"FAIL rename: {type(e).__name__}: {e}\"\n    try:\n        clone_w.TransformBy(Matrix3d.Displacement(Vector3d(x_offset, 0.0, 0.0)))\n    except Exception as e:\n        return f\"FAIL translate: {type(e).__name__}: {e}\"\n\n    # 5. Set bw on the gabion subassembly\n    gabion_id = gabion_subassembly_id(clone_w, tx)\n    if gabion_id is None:\n        return \"FAIL: gabion subassembly not found in clone\"\n    try:\n        sub_w = tx.GetObject(gabion_id, OpenMode.ForWrite)\n        sub_w.ParamsDouble.get_Item(0).Value = new_bw\n    except Exception as e:\n        return f\"FAIL bw set: {type(e).__name__}: {e}\"\n\n    return f\"OK  (clone_id={clone_id})\"\n\n\n# ---------------------------------------------------------------------------\n# main\n# ---------------------------------------------------------------------------\n\nlog(\"=== build_widening_assemblies ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\")\nlog(f\"variants: {len(WIDENING_VARIANTS)}\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ncivil_db = CivilApplication.ActiveDocument\n\nresults: list[str] = []\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ac = civil_db.AssemblyCollection\n        log(f\"AssemblyCollection.Count before: {ac.Count}\\n\")\n\n        # Per-base-type counter for X offset\n        per_base_idx: dict[str, int] = {}\n        for base_name, new_name, new_bw in WIDENING_VARIANTS:\n            idx = per_base_idx.get(base_name, 0)\n            x_offset = X_OFFSET_FIRST + idx * X_OFFSET_STEP\n            per_base_idx[base_name] = idx + 1\n\n            status = build_one(ac, tx, db, base_name, new_name, new_bw, x_offset)\n            line = f\"  [{base_name} +{x_offset:.0f}]  -\u003e {new_name}  bw={new_bw}  :  {status}\"\n            log(line)\n            results.append(line)\n\n        log(f\"\\nAssemblyCollection.Count after: {ac.Count}\")\n        tx.Commit()\n        log(\"transaction committed\")\n    except Exception as e:\n        log(f\"\\nERROR inside tx: {e}\")\n        log(traceback.format_exc())\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nlog(\"\\n=== DONE ===\")\nOUT = \"\\n\".join(results)\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "e5f6a7b8c9d01234efab567890123457",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "e5f6a7b8c9d01234efab567890123457",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

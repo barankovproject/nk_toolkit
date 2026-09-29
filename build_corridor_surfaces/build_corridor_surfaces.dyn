@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Build a TIN surface for every corridor: link code Top, boundary from inf_model_corridors polyline.\n\nTwo-pass approach (each corridor in its own transaction):\n  Pass 1: configure link code, break line, FL codes → rebuild.\n  Pass 2: clear boundaries, add boundary from tagged outline polyline → rebuild.\n\nPrerequisite: draw_corridor_outlines must be run first to create XData-tagged polylines\non layer inf_model_corridors (XDATA_APP=\u0027ARHYZ_CORR\u0027, code 1000 = corridor name).\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport json\nimport os\nimport sys\nimport traceback\nfrom typing import Any\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import Handle as AcHandle\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode\nfrom Autodesk.Civil.ApplicationServices import CivilApplication\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\n\nfrom civil.utils import safe_iter  # noqa: E402\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\build_corridor_surfaces\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"build_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nLINK_CODE = \"Top\"\nBOUNDARY_NAME = \"outline\"\nFL_CODES = (\"Daylight\", \"Ditch_Out\")\nHANDLES_FILE = (\n    r\"C:\\Arhyz\\automation\\scripts\\draw_corridor_outlines\\corridor_outlines.json\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef load_outline_map(db: Any) -\u003e dict[str, Any]:\n    \"\"\"Load {corridor_name: ObjectId} from the JSON handle file written by draw_corridor_outlines.\"\"\"\n    try:\n        with open(HANDLES_FILE, encoding=\"utf-8\") as f:\n            raw = json.load(f)\n    except Exception as e:\n        log(f\"WARNING: could not read {HANDLES_FILE}: {e}\")\n        return {}\n    result: dict[str, Any] = {}\n    for name, hstr in raw.items():\n        try:\n            oid = db.GetObjectId(False, AcHandle(int(hstr, 16)), 0)\n            if not oid.IsNull:\n                result[name] = oid\n        except Exception:\n            pass\n    return result\n\n\ndef configure_codes(corr_w: Any) -\u003e str:\n    \"\"\"Pass 1: ensure surface exists with link code, break line, FL codes; rebuild.\"\"\"\n    cs_col = corr_w.CorridorSurfaces\n    if cs_col.Count == 0:\n        surf_name = f\"{corr_w.Name} - Surface\"\n        try:\n            cs_col.Add(surf_name)\n        except Exception as e:\n            return f\"FAIL Add: {type(e).__name__}: {e}\"\n\n    for cs in cs_col:\n        try:\n            existing_lc = list(cs.LinkCodes())\n            if LINK_CODE not in existing_lc:\n                cs.AddLinkCode(LINK_CODE, False)\n        except Exception as e:\n            return f\"FAIL AddLinkCode: {type(e).__name__}: {e}\"\n        try:\n            cs.SetLinkCodeAsBreakLine(LINK_CODE, True)\n        except Exception as e:\n            return f\"FAIL SetLinkCodeAsBreakLine: {type(e).__name__}: {e}\"\n        try:\n            existing_fl = list(cs.FeatureLineCodes())\n            for code in FL_CODES:\n                if code not in existing_fl:\n                    cs.AddFeatureLineCode(code)\n        except Exception as e:\n            return f\"FAIL AddFeatureLineCode: {type(e).__name__}: {e}\"\n    try:\n        corr_w.Rebuild()\n    except Exception as e:\n        return f\"FAIL Rebuild: {type(e).__name__}: {e}\"\n    return \"OK\"\n\n\ndef apply_boundary(corr_w: Any, pl_id: Any) -\u003e str:\n    \"\"\"Pass 2: clear boundaries, add outline polyline as boundary, rebuild.\"\"\"\n    for cs in corr_w.CorridorSurfaces:\n        try:\n            bnd_col = cs.Boundaries\n            while bnd_col.Count \u003e 0:\n                bnd_col.RemoveAt(0)\n            bnd_col.Add(BOUNDARY_NAME, pl_id)\n        except Exception as e:\n            return f\"FAIL Boundary: {type(e).__name__}: {e}\"\n    try:\n        corr_w.Rebuild()\n    except Exception as e:\n        return f\"FAIL Rebuild: {type(e).__name__}: {e}\"\n    return \"OK\"\n\n\ndef run_pass(\n    corr_ids: list[Any],\n    db: Any,\n    fn: Any,\n    label: str,\n    extra_args: dict[Any, Any] | None = None,\n) -\u003e None:\n    for raw in corr_ids:\n        tx = db.TransactionManager.StartTransaction()\n        name = \"?\"\n        try:\n            corr = tx.GetObject(raw, OpenMode.ForWrite)\n            name = corr.Name\n            if extra_args is not None:\n                arg = extra_args.get(raw)\n                if arg is None:\n                    status = f\"SKIP (no outline polyline for {name})\"\n                else:\n                    status = fn(corr, arg)\n            else:\n                status = fn(corr)\n            tx.Commit()\n        except Exception as e:\n            status = f\"FAIL: {type(e).__name__}: {e}\"\n            log(traceback.format_exc())\n            try:\n                tx.Abort()\n            except Exception:\n                pass\n        finally:\n            try:\n                tx.Dispose()\n            except Exception:\n                pass\n        log(f\"  {name:30s} [{label}] {status}\")\n\n\nlog(\"=== build_corridor_surfaces ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\")\nlog(f\"link code: {LINK_CODE!r}  handles: {HANDLES_FILE!r}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ncivil_db = CivilApplication.ActiveDocument\n\nlock = doc.LockDocument()\ntry:\n    # collect corridor ObjectIds\n    corr_ids: list[Any] = []\n    tx0 = db.TransactionManager.StartTransaction()\n    try:\n        for raw in safe_iter(civil_db.CorridorCollection):\n            corr_ids.append(raw)\n        tx0.Commit()\n    except Exception:\n        tx0.Abort()\n    finally:\n        tx0.Dispose()\n\n    log(f\"Corridors: {len(corr_ids)}\\n\")\n\n    outline_map = load_outline_map(db)\n    log(f\"Outline polylines from handle file: {len(outline_map)}\\n\")\n\n    # build raw → pl_id map for pass 2\n    raw_to_pl: dict[Any, Any] = {}\n    tx_names = db.TransactionManager.StartTransaction()\n    try:\n        for raw in corr_ids:\n            corr = tx_names.GetObject(raw, OpenMode.ForRead)\n            pl_id = outline_map.get(corr.Name)\n            if pl_id is not None:\n                raw_to_pl[raw] = pl_id\n        tx_names.Commit()\n    except Exception:\n        tx_names.Abort()\n    finally:\n        tx_names.Dispose()\n\n    log(\"--- pass 1: link codes + break line + FL codes ---\")\n    run_pass(corr_ids, db, configure_codes, \"codes\")\n\n    log(\"\\n--- pass 2: boundary from outline polyline ---\")\n    run_pass(corr_ids, db, apply_boundary, \"boundary\", extra_args=raw_to_pl)\n\n    log(\"\\n=== DONE ===\")\n\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

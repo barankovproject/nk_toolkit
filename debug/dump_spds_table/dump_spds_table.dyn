@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "01c6a5b4-079b-48bb-b9af-ecd53fb8a021",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_brep_bottom",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump: identify the runtime type/API surface of an existing SPDS table in the\ncurrent drawing, so build_gsi_ribs (or a new report script) can later fill/create such\na table with the GSI-basket specification (mats/walls/ribs). No prior SPDS usage in\nthis codebase -- first exploration pass.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport os\nimport traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    BlockReference,\n    OpenMode,\n    SymbolUtilityServices,\n    Table,\n)\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_spds_table\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_spds_table_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef dump_table(tbl) -\u003e None:\n    log(f\"  TableStyle: {tbl.TableStyle}\")\n    log(f\"  Rows x Cols: {tbl.Rows.Count} x {tbl.Columns.Count}\")\n    for r in range(min(tbl.Rows.Count, 15)):\n        row_cells = []\n        for c in range(tbl.Columns.Count):\n            try:\n                txt = tbl.Cells[r, c].TextString\n            except Exception as e:\n                txt = f\"\u003cerr:{e}\u003e\"\n            row_cells.append(txt)\n        log(f\"    row {r}: {row_cells}\")\n    if tbl.Rows.Count \u003e 15:\n        log(f\"    ... ({tbl.Rows.Count - 15} more rows)\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(f\"drawing: {db.Filename}\")\n\n        # 1) loaded assemblies -- anything SPDS/nanoCAD related?\n        try:\n            import System\n\n            log(\"--- loaded assemblies matching Spds/SPDS/nanocad ---\")\n            asms = System.AppDomain.CurrentDomain.GetAssemblies()\n            hits = [\n                a\n                for a in asms\n                if \"spds\" in str(a.FullName).lower()\n                or \"nanocad\" in str(a.FullName).lower()\n            ]\n            if not hits:\n                log(\"  none found\")\n            for a in hits:\n                log(f\"  {a.FullName}\")\n                try:\n                    types = a.GetTypes()\n                    table_like = [\n                        t.FullName for t in types if \"table\" in t.Name.lower()\n                    ]\n                    for t in table_like[:40]:\n                        log(f\"      type: {t}\")\n                except Exception as e:\n                    log(f\"      (GetTypes failed: {e})\")\n        except Exception as e:\n            log(f\"assembly scan failed: {e}\")\n\n        # 2) model space entities -- anything table-like\n        log(\"--- model space scan: table-like entities ---\")\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead\n        )\n        n_scanned = 0\n        n_table_type = 0\n        n_blockref_table_name = 0\n        for oid in ms:\n            try:\n                o = tx.GetObject(oid, OpenMode.ForRead)\n            except Exception:\n                continue\n            n_scanned += 1\n            tname = o.GetType().FullName\n            if isinstance(o, Table):\n                n_table_type += 1\n                log(f\"[Table] handle={o.Handle} type={tname}\")\n                try:\n                    dump_table(o)\n                except Exception as e:\n                    log(f\"  dump_table failed: {e}\")\n                    log(traceback.format_exc())\n            elif isinstance(o, BlockReference):\n                btr_id = (\n                    o.DynamicBlockTableRecord\n                    if o.IsDynamicBlock\n                    else o.BlockTableRecord\n                )\n                bname = str(tx.GetObject(btr_id, OpenMode.ForRead).Name)\n                if (\n                    \"table\" in bname.lower()\n                    or \"spds\" in bname.lower()\n                    or \"спдс\" in bname.lower()\n                ):\n                    n_blockref_table_name += 1\n                    log(\n                        f\"[BlockReference] handle={o.Handle} block=\u0027{bname}\u0027 \"\n                        f\"type={tname}\"\n                    )\n            elif \"table\" in tname.lower() or \"spds\" in tname.lower():\n                log(f\"[other table-like] handle={o.Handle} type={tname}\")\n\n        log(f\"scanned {n_scanned} model-space entities\")\n        log(f\"  Table-type objects: {n_table_type}\")\n        log(f\"  BlockReferences with table-ish names: {n_blockref_table_name}\")\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

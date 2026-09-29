@@ -1,0 +1,23 @@
+{
+  "cross": {
+    "exc_per_m": 1.32,
+    "exc_killer": 0.86,
+    "stone_per_m": 0.435,
+    "stone_killer": 0.525,
+    "geo_base": 2.66,
+    "geo_coef": 1.2,
+    "geo_killer": 3.2,
+    "density": 2.01
+  },
+  "long": {
+    "exc_per_m": 1.08,
+    "stone_per_m": 0.4,
+    "geo_base": 2.44,
+    "geo_coef": 1.2,
+    "density": 2.01,
+    "mat_per_m": 0.5,
+    "mat_per_turn": 1.0,
+    "mat_face_m2": 6.0,
+    "anchor_per_m": 2.0
+  }
+}

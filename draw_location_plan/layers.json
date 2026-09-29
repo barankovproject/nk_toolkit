@@ -1,0 +1,18 @@
+{
+  "filter": {
+    "name": "Location Plan",
+    "expr": "NAME == \"inf_lp_*\""
+  },
+  "layers": {
+    "inf_lp_centerline":  { "color": 1,               "lineweight": "default", "linetype": "CENTER" },
+    "inf_lp_outline":     { "color": 86,              "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_hatch":       { "color": [144, 238, 144], "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_gabions":     { "color": 83,              "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_stations":    { "color": 2,               "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_gabion_3d":   { "color": 3,               "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_lp_corridor":    { "color": 4,               "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_lp_slope_hatch": { "color": 140,             "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_ribs":        { "color": 3,               "lineweight": "default", "linetype": "Continuous" },
+    "inf_lp_anno":        { "color": 7,               "lineweight": "default", "linetype": "Continuous" }
+  }
+}

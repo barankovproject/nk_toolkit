@@ -1,0 +1,9 @@
+{
+  "filter": {
+    "name": "Anchor Points",
+    "expr": "NAME == \"inf_md_anchor_pts\""
+  },
+  "layers": {
+    "inf_md_anchor_pts": { "color": 7, "lineweight": 0.35, "linetype": "Continuous" }
+  }
+}

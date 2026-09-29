@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Verify inf_gl_* entities for НК-1А-5 are in the drawing and not hidden.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_gl_check\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"dump_gl_check_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nREGAPP = \"ARHYZ_GL\"\nCANAL = \"НК-1А-5\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlog(f\"active document: {doc.Name}\")\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        # layer states\n        lt = tx.GetObject(db.LayerTableId, OpenMode.ForRead)\n        log(\"\\n=== inf_gl_* layers ===\")\n        for lid in lt:\n            ltr = tx.GetObject(lid, OpenMode.ForRead)\n            if ltr.Name.startswith(\"inf_gl_\"):\n                log(f\"  {ltr.Name}: off={ltr.IsOff} frozen={ltr.IsFrozen}\")\n\n        # entities in current space\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite)\n        per_layer: dict = {}\n        tagged_canal = 0\n        sample = None\n        for oid in ms:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n            if not ent.Layer.startswith(\"inf_gl_\"):\n                continue\n            per_layer[ent.Layer] = per_layer.get(ent.Layer, 0) + 1\n            rb = ent.GetXDataForApplication(REGAPP)\n            nm = None\n            if rb is not None:\n                nm = next((str(tv.Value) for tv in rb if tv.TypeCode == 1000), None)\n            if nm == CANAL:\n                tagged_canal += 1\n                if sample is None:\n                    try:\n                        ext = ent.GeometricExtents\n                        sample = f\"{type(ent).__name__} on {ent.Layer}  min={ext.MinPoint} max={ext.MaxPoint}\"\n                    except Exception:\n                        sample = f\"{type(ent).__name__} on {ent.Layer} (no extents)\"\n\n        log(f\"\\n=== inf_gl_* entities in current space ({db.CurrentSpaceId == db.BlockTableId}) ===\")\n        for lay in sorted(per_layer.keys()):\n            log(f\"  {lay}: {per_layer[lay]}\")\n        log(f\"\\ntotal inf_gl_* tagged \u0027{CANAL}\u0027: {tagged_canal}\")\n        log(f\"sample: {sample}\")\n\n        log(\"\\n=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

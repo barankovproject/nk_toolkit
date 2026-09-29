@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Read longitudinal-ditch property sets and export a quantity ведомость (per trasse + total).\n\nSums the per-ditch quantities that ditch_03_build_long writes into the\nArhyz_LongDitch property set (откопка / перемещение / щебень / геотекстиль), grouped\nby the Canal label (the trasse, e.g. \"1а\") stored on every ditch. The report only sums\nstored values — rates live in ditch_03_build_long/volumes.py.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport csv\nimport datetime\nimport os\nimport traceback\nfrom typing import Any\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"AecPropDataMgd\")\n\nimport sys\n\nimport Autodesk.Aec.PropertyData.DatabaseServices as _PD\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Polyline3d,\n    SymbolUtilityServices,\n)\n\n_SCRIPTS_ROOT = r\"C:\\Arhyz\\automation\\scripts\\ditch\"\nif _SCRIPTS_ROOT not in sys.path:\n    sys.path.insert(0, _SCRIPTS_ROOT)\n\nfrom ditch_core.config import ELEV_SPLIT  # noqa: E402  (needs _SCRIPTS_ROOT on sys.path)\n\n# Elevation-band labels for the ведомость split (by the ditch\u0027s highest vertex).\n_ZONE_BELOW = \"\u003c2500\"\n_ZONE_ABOVE = \"\u003e=2500\"\n\n\ndef _zone(top_z: float) -\u003e str:\n    \"\"\"Band a ditch by its highest elevation: at/above ELEV_SPLIT vs below.\"\"\"\n    return _ZONE_ABOVE if top_z \u003e= ELEV_SPLIT else _ZONE_BELOW\n\n\ndef _maxz(ent: Any, tx: Any) -\u003e float:\n    \"\"\"Highest vertex Z of a longitudinal-ditch Polyline3d; -inf for anything else.\"\"\"\n    if not isinstance(ent, Polyline3d):\n        return float(\"-inf\")\n    zs: list[float] = []\n    for vid in ent:\n        try:\n            zs.append(float(tx.GetObject(vid, OpenMode.ForRead).Position.Z))\n        except Exception:\n            continue\n    return max(zs) if zs else float(\"-inf\")\n\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\ditch\\ditch_06_report_long\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nTIMESTAMP = datetime.datetime.now().strftime(\"%Y%m%d_%H%M%S\")\nLOG_FILE = os.path.join(LOG_DIR, f\"report_{TIMESTAMP}.log\")\nCSV_FILE = os.path.join(LOG_DIR, f\"longitudinal_volumes_{TIMESTAMP}.csv\")\n\n_PS_DEF = \"Arhyz_LongDitch\"\n_FIELDS = (\n    \"Index\",\n    \"Length3D\",\n    \"VolExcavation\",\n    \"MoveTonnage\",\n    \"VolStone\",\n    \"VolGeotextile\",\n    \"MatCount\",\n    \"MatArea\",\n    \"AnchorCount\",\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef _psd_id(db: Any) -\u003e Any:\n    \"\"\"ObjectId of the Arhyz_LongDitch PSD, or None if no longitudinal ditches exist.\"\"\"\n    dpsd = _PD.DictionaryPropertySetDefinitions(db)\n    if _PS_DEF in list(dpsd.NamesInUse):\n        return dpsd.GetAt(_PS_DEF)\n    return None\n\n\ndef _read_ps(ent: Any, psd_id: Any, tx: Any) -\u003e Any:\n    \"\"\"Return (trasse, [_FIELDS values]) for a ditch, or None if it has no Arhyz_LongDitch PS.\n\n    The trasse is the Canal label (e.g. \"1а\"); ditches built before that field existed\n    fall back to \"(без трассы)\" so none are dropped.\n    \"\"\"\n    try:\n        ps_id = _PD.PropertyDataServices.GetPropertySet(ent, psd_id)\n        ps = tx.GetObject(ps_id, OpenMode.ForRead)\n        trasse = str(ps.GetAt(ps.PropertyNameToId(\"Canal\"))).strip() or \"(без трассы)\"\n        vals = [float(ps.GetAt(ps.PropertyNameToId(f))) for f in _FIELDS]\n    except Exception:\n        return None\n    return (trasse, vals)\n\n\nlog(\"=== ditch_06_report_long ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\n\n# (trasse, zone) -\u003e [length, exc, move, stone, geo, mat_c, mat_a, anch]\ntotals: dict[tuple[str, str], list[float]] = {}\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        psd_id = _psd_id(db)\n        if psd_id is None:\n            log(\"No Arhyz_LongDitch property set in this drawing — nothing to report.\")\n        else:\n            ms_id = SymbolUtilityServices.GetBlockModelSpaceId(db)\n            ms = tx.GetObject(ms_id, OpenMode.ForRead)\n            for oid in ms:\n                try:\n                    ent = tx.GetObject(oid, OpenMode.ForRead)\n                except Exception:\n                    continue\n                res = _read_ps(ent, psd_id, tx)\n                if res is None:\n                    continue\n                trasse, vals = res\n                # band by the ditch\u0027s highest vertex: a run crossing the boundary\n                # counts entirely in the at/above band.\n                key = (trasse, _zone(_maxz(ent, tx)))\n                # vals = [idx, length, exc, move, stone, geo, mat_c, mat_a, anch]\n                acc = totals.setdefault(key, [0.0] * 8)\n                for i, v in enumerate(vals[1:]):\n                    acc[i] += v\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\\n{traceback.format_exc()}\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nheader = [\n    \"trasse\",\n    \"zone\",\n    \"length_m\",\n    \"excavation_m3\",\n    \"move_t\",\n    \"stone_m3\",\n    \"geotextile_m2\",\n    \"mattress_pcs\",\n    \"mattress_m2\",\n    \"anchor_pcs\",\n]\n# Per column: how many decimals to round to (mattress_pcs / anchor_pcs are counts).\n_DECIMALS = [None, 2, 2, 2, 2, 2, 0, 2, 0]\n\n\ndef _fmt(vals: list[float]) -\u003e list[Any]:\n    return [round(v, d) if d else round(v) for v, d in zip(vals, _DECIMALS[1:])]\n\n\nrows: list[list[Any]] = []\ngrand = [0.0] * 8\nfor key in sorted(totals):\n    trasse, zone = key\n    acc = totals[key]\n    rows.append([trasse, zone, *_fmt(acc)])\n    for i, v in enumerate(acc):\n        grand[i] += v\n    log(\n        f\"  {trasse:18s} {zone:\u003e7} L={acc[0]:8.2f}  exc={acc[1]:8.2f}  move={acc[2]:8.2f}  \"\n        f\"stone={acc[3]:7.2f}  geo={acc[4]:8.2f}  mat={round(acc[5]):\u003e4}шт/{acc[6]:7.2f}m2  \"\n        f\"anch={round(acc[7]):\u003e4}шт\"\n    )\n\nif rows:\n    rows.append([\"TOTAL\", \"\", *_fmt(grand)])\n    with open(CSV_FILE, \"w\", newline=\"\", encoding=\"utf-8-sig\") as f:\n        writer = csv.writer(f, delimiter=\";\")\n        writer.writerow(header)\n        writer.writerows(rows)\n    log(f\"\\n{len(rows) - 1} (trasse, zone) row(s) exported -\u003e {CSV_FILE}\")\n    OUT = CSV_FILE\nelse:\n    log(\"\\nNo tagged longitudinal ditches found.\")\n    OUT = LOG_FILE\n\nlog(\"=== DONE ===\")\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

@@ -1,0 +1,13 @@
+{
+  "filter": {
+    "name": "GSI Grid",
+    "expr": "NAME == \"inf_gsi_grid_*\""
+  },
+  "layers": {
+    "inf_gsi_grid_diag":   { "color": 5, "lineweight": "default", "linetype": "Continuous" },
+    "inf_gsi_grid_perp":   { "color": 6, "lineweight": "default", "linetype": "Continuous" },
+    "inf_gsi_grid_region": { "color": 7, "lineweight": "default", "linetype": "Continuous" },
+    "inf_gsi_grid_block":  { "color": 2, "lineweight": "default", "linetype": "Continuous" },
+    "inf_gsi_grid_wedge":  { "color": 4, "lineweight": "default", "linetype": "Continuous" }
+  }
+}

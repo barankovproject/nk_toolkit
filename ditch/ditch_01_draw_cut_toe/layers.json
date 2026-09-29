@@ -1,0 +1,9 @@
+{
+  "filter": {
+    "name": "Cut Toe Line",
+    "expr": "NAME == \"inf_ct_*\""
+  },
+  "layers": {
+    "inf_ct_toe": { "color": 5, "lineweight": 0.5, "linetype": "Continuous" }
+  }
+}

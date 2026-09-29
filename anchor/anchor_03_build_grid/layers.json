@@ -1,0 +1,10 @@
+{
+  "filter": {
+    "name": "Anchor Grid",
+    "expr": "NAME == \"inf_md_anchor_grid\" OR NAME == \"inf_md_anchor_div\""
+  },
+  "layers": {
+    "inf_md_anchor_grid": { "color": 7, "lineweight": 0.35, "linetype": "Continuous" },
+    "inf_md_anchor_div": { "color": 8, "lineweight": 0.5, "linetype": "DASHED" }
+  }
+}

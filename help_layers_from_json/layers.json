@@ -1,0 +1,14 @@
+{
+  "filter": {
+    "name": "Excavation",
+    "expr": "NAME == \"inf_exc_*\""
+  },
+  "layers": {
+    "inf_exc_outline": { "color": 7,               "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_exc_callout": { "color": [0, 0, 0],       "lineweight": "default", "linetype": "Continuous" },
+    "inf_exc_text":    { "color": [135, 206, 235], "lineweight": "default", "linetype": "Continuous" },
+    "inf_exc_thick":   { "color": [139, 69, 19],   "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_exc_thin":    { "color": 7,               "lineweight": 0.13,      "linetype": "Continuous" },
+    "inf_exc_hatch":   { "color": [144, 238, 144], "lineweight": "default", "linetype": "Continuous" }
+  }
+}

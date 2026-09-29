@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"For each marker, find the nearest line segments across ALL layers (what actually bounds it).\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode, Line, Polyline, MText\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\zone_segments\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"zone_near_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef seg_dist(px, py, x1, y1, x2, y2):\n    dx, dy = x2 - x1, y2 - y1\n    if dx == 0 and dy == 0:\n        return math.hypot(px - x1, py - y1)\n    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))\n    return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForRead)\n        # segs: (layer, x1, y1, x2, y2)\n        segs = []\n        markers = []\n        for oid in ms:\n            try:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n            except Exception:\n                continue\n            ly = getattr(ent, \"Layer\", None)\n            if isinstance(ent, Line):\n                s, e = ent.StartPoint, ent.EndPoint\n                segs.append((ly, s.X, s.Y, e.X, e.Y))\n            elif isinstance(ent, Polyline):\n                n = ent.NumberOfVertices\n                for i in range(n - 1):\n                    a = ent.GetPoint2dAt(i)\n                    b = ent.GetPoint2dAt(i + 1)\n                    segs.append((ly, a.X, a.Y, b.X, b.Y))\n            elif isinstance(ent, MText) and ent.Text in (\"1\", \"2\"):\n                p = ent.Location\n                markers.append((ent.Text, p.X, p.Y))\n\n        log(f\"{len(segs)} sub-segments total; markers={markers}\")\n        for mtext, mx, my in markers:\n            dists = []\n            for (ly, x1, y1, x2, y2) in segs:\n                d = seg_dist(mx, my, x1, y1, x2, y2)\n                dists.append((d, ly, (x1 + x2) / 2, (y1 + y2) / 2))\n            dists.sort(key=lambda t: t[0])\n            log(\"\")\n            log(f\"=== marker \u0027{mtext}\u0027 ({mx:.1f},{my:.1f}) — 12 nearest sub-segments ===\")\n            for d, ly, mxs, mys in dists[:12]:\n                log(f\"   d={d:8.2f} m  [{ly}]  mid=({mxs:.1f},{mys:.1f})\")\n            # per-layer nearest\n            bylayer = {}\n            for d, ly, _, _ in dists:\n                if ly not in bylayer or d \u003c bylayer[ly]:\n                    bylayer[ly] = d\n            log(f\"   nearest per layer: \" + \"; \".join(f\"[{k}]={v:.1f}\" for k, v in sorted(bylayer.items(), key=lambda kv: kv[1])))\n\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

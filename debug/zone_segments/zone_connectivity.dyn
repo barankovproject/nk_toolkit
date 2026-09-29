@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Analyze segment connectivity: weld endpoints by tolerance, find components, map to markers.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode, Line, Circle, MText\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\zone_segments\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"zone_conn_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n# Layers that may carry the zone-boundary segments.\nLAYERS = {\n    \"Новые Откосы.Ситуация.Откосы\",\n    \"Откосы.Поверхность.Структурные линии\",\n    \"0\",\n}\n# Endpoint welding tolerances to try (metres). A gap \u003c EPS between two endpoints\n# is treated as a connection (\"недотяг\" bridged).\nEPS_LIST = [0.05, 0.2, 0.5, 1.0]\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\nclass DSU:\n    def __init__(self) -\u003e None:\n        self.parent: dict = {}\n\n    def find(self, a):\n        p = self.parent.setdefault(a, a)\n        while p != a:\n            self.parent[a] = self.parent[p]\n            a, p = p, self.parent[p]\n        return a\n\n    def union(self, a, b):\n        ra, rb = self.find(a), self.find(b)\n        if ra != rb:\n            self.parent[ra] = rb\n\n\ndef weld_and_components(segs, eps):\n    \"\"\"Snap endpoints to nodes within eps using a spatial hash; union segments sharing a node.\n\n    Returns (node_of, comp_of_node, components) where:\n      node_of[(x,y)] -\u003e node id; components: comp_id -\u003e list of seg indices.\n    \"\"\"\n    cell = eps if eps \u003e 0 else 1.0\n    grid: dict = {}            # (gx,gy) -\u003e list of (node_id, x, y)\n    nodes: list = []           # node_id -\u003e (x,y)\n\n    def get_node(x, y):\n        gx, gy = int(x // cell), int(y // cell)\n        for dx in (-1, 0, 1):\n            for dy in (-1, 0, 1):\n                for nid, nx, ny in grid.get((gx + dx, gy + dy), ()):\n                    if (nx - x) ** 2 + (ny - y) ** 2 \u003c= eps * eps:\n                        return nid\n        nid = len(nodes)\n        nodes.append((x, y))\n        grid.setdefault((gx, gy), []).append((nid, x, y))\n        return nid\n\n    dsu = DSU()\n    seg_nodes = []\n    for (x1, y1, x2, y2) in segs:\n        n1, n2 = get_node(x1, y1), get_node(x2, y2)\n        dsu.union(n1, n2)\n        seg_nodes.append((n1, n2))\n\n    comps: dict = {}\n    deg: dict = {}\n    for n1, n2 in seg_nodes:\n        deg[n1] = deg.get(n1, 0) + 1\n        deg[n2] = deg.get(n2, 0) + 1\n    for i, (n1, n2) in enumerate(seg_nodes):\n        comps.setdefault(dsu.find(n1), []).append(i)\n    return nodes, seg_nodes, comps, deg, dsu\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForRead)\n\n        segs_by_layer: dict = {ly: [] for ly in LAYERS}\n        markers = []  # (text, x, y)\n        for oid in ms:\n            try:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n            except Exception:\n                continue\n            ly = getattr(ent, \"Layer\", None)\n            if isinstance(ent, Line) and ly in segs_by_layer:\n                s, e = ent.StartPoint, ent.EndPoint\n                segs_by_layer[ly].append((s.X, s.Y, e.X, e.Y))\n            elif isinstance(ent, MText) and ent.Text in (\"1\", \"2\"):\n                p = ent.Location\n                markers.append((ent.Text, p.X, p.Y))\n\n        for ly in LAYERS:\n            log(f\"layer [{ly}]: {len(segs_by_layer[ly])} segments\")\n        log(f\"markers: {markers}\")\n        log(\"\")\n\n        # Analyze the main slope layer alone, then combined, across tolerances.\n        scenarios = {\n            \"Откосы only\": list(segs_by_layer.get(\"Новые Откосы.Ситуация.Откосы\", [])),\n            \"Откосы+Структурные\": (\n                list(segs_by_layer.get(\"Новые Откосы.Ситуация.Откосы\", []))\n                + list(segs_by_layer.get(\"Откосы.Поверхность.Структурные линии\", []))\n            ),\n        }\n\n        for sname, segs in scenarios.items():\n            log(f\"================ SCENARIO: {sname} ({len(segs)} segs) ================\")\n            for eps in EPS_LIST:\n                nodes, seg_nodes, comps, deg, dsu = weld_and_components(segs, eps)\n                sizes = sorted(((len(v), k) for k, v in comps.items()), reverse=True)\n                open_ends_total = sum(1 for n, d in deg.items() if d == 1)\n                log(f\"  --- EPS={eps}: {len(comps)} components, \"\n                    f\"{len(nodes)} welded nodes, {open_ends_total} open ends (deg=1) ---\")\n                for size, cid in sizes[:6]:\n                    seg_ids = comps[cid]\n                    xs, ys = [], []\n                    comp_nodes = set()\n                    for i in seg_ids:\n                        n1, n2 = seg_nodes[i]\n                        comp_nodes.add(n1)\n                        comp_nodes.add(n2)\n                        x1, y1, x2, y2 = segs[i]\n                        xs += [x1, x2]\n                        ys += [y1, y2]\n                    open_ends = sum(1 for n in comp_nodes if deg.get(n, 0) == 1)\n                    bbox = (min(xs), min(ys), max(xs), max(ys))\n                    # which markers fall inside this component\u0027s bbox\n                    inside = [\n                        m[0] for m in markers\n                        if bbox[0] \u003c= m[1] \u003c= bbox[2] and bbox[1] \u003c= m[2] \u003c= bbox[3]\n                    ]\n                    log(f\"      comp size={size} segs, nodes={len(comp_nodes)}, \"\n                        f\"open_ends={open_ends}, \"\n                        f\"bbox=({bbox[0]:.1f},{bbox[1]:.1f})-({bbox[2]:.1f},{bbox[3]:.1f}), \"\n                        f\"markers_in_bbox={inside}\")\n            log(\"\")\n\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

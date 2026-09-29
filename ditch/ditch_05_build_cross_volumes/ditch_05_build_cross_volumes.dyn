@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Recompute cross-ditch volume property sets from the current drawn geometry.\n\nRun after manually editing marked ditches (inf_md_*) in the drawing: it re-reads\nevery tagged ditch\u0027s live geometry and rewrites the volume fields of its\nArhyz_CrossDitch property set, so the quantities match what is actually drawn.\nRates live in ditch_04_build_cross/volumes.py; this script never recomputes them\ninline. The ведомость (ditch_06_report_cross) then sums the refreshed values.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport os\nimport sys\nimport traceback\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"AecPropDataMgd\")\n\n_SCRIPTS_ROOT = r\"C:\\Arhyz\\automation\\scripts\\ditch\"\n_AUTOMATION_ROOT = r\"C:\\Arhyz\\automation\"  # for `import civil.*` (Station/ThetaDeg)\nfor _p in (_SCRIPTS_ROOT, _AUTOMATION_ROOT):\n    if _p not in sys.path:\n        sys.path.insert(0, _p)\n\n# Drop cached package modules so edits to volumes.py / refresh.py take effect.\nfor _m in [\n    m\n    for m in list(sys.modules)\n    if m.startswith(\"ditch_04_build_cross\") or m.startswith(\"ditch_core\")\n]:\n    del sys.modules[_m]\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode, SymbolUtilityServices\n\nfrom ditch_core.property_sets import ensure_cd_psd, ensure_part_psd\nfrom ditch_04_build_cross.refresh import refresh_volumes\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\ditch\\ditch_05_build_cross_volumes\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nTIMESTAMP = datetime.datetime.now().strftime(\"%Y%m%d_%H%M%S\")\nLOG_FILE = os.path.join(LOG_DIR, f\"refresh_{TIMESTAMP}.log\")\n\n\ndef log(msg: str = \"\", level: str = \"INFO\") -\u003e None:\n    ts = datetime.datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(f\"[{ts}] [{level}] {msg}\\n\")\n\n\nlog(\"=== ditch_05_build_cross_volumes (refresh PS from geometry) ===\")\n\nupdated = 0\nerrors = 0\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        psd_id = ensure_cd_psd(db, tx)\n        part_psd_id = ensure_part_psd(db, tx)\n        ms_id = SymbolUtilityServices.GetBlockModelSpaceId(db)\n        ms = tx.GetObject(ms_id, OpenMode.ForRead)\n        updated = refresh_volumes(ms, tx, psd_id, log, part_psd_id)\n        log(f\"refreshed {updated} ditch(es) from current geometry\")\n        tx.Commit()\n    except Exception as e:\n        errors += 1\n        log(f\"ERROR: {e}\\n{traceback.format_exc()}\", \"CRITICAL\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nlog(f\"=== DONE: updated={updated}, errors={errors} ===\")\nOUT = updated if errors == 0 else f\"errors={errors}\"\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

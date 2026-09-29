@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Build a closed 2D polyline around each corridor using Daylight feature lines.\n\nFor each corridor:\n  1. Get the two Daylight CorridorFeatureLine objects (left and right sides).\n  2. Read XY from FeatureLinePoint.XYZ on each.\n  3. Identify which is right (positive Offset) and which is left (negative Offset).\n  4. Build closed Polyline: right side forward + left side reversed.\n  5. Fix self-intersections at corridor ends.\n  6. Delete any existing polyline tagged with this corridor name (overwrite).\n  7. Add new polyline to model space on OUTLINE_LAYER with XData tag.\n\nXData app: ARHYZ_CORR, code 1000 = corridor name.\nThis tag is used by build_corridor_surfaces to find the boundary polyline per corridor.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport os\nimport sys\nimport traceback\nfrom typing import Any\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nimport json\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    BlockTableRecord,\n    LayerTableRecord,\n    OpenMode,\n    Polyline,\n)\nfrom Autodesk.AutoCAD.Geometry import Point2d\nfrom Autodesk.Civil.ApplicationServices import CivilApplication\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\n\nfrom civil.utils import safe_iter, safe_resolve  # noqa: E402\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\draw_corridor_outlines\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"build_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nOUTLINE_LAYER = \"inf_model_corridors\"\nFL_CODE = \"Daylight\"\nHANDLES_FILE = (\n    r\"C:\\Arhyz\\automation\\scripts\\draw_corridor_outlines\\corridor_outlines.json\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef ensure_layer(db: Any, tx: Any, layer_name: str) -\u003e None:\n    lt = tx.GetObject(db.LayerTableId, OpenMode.ForRead)\n    if lt.Has(layer_name):\n        return\n    lt_w = tx.GetObject(db.LayerTableId, OpenMode.ForWrite)\n    ltr = LayerTableRecord()\n    ltr.Name = layer_name\n    lt_w.Add(ltr)\n    tx.AddNewlyCreatedDBObject(ltr, True)\n\n\ndef load_handles() -\u003e dict[str, str]:\n    try:\n        with open(HANDLES_FILE, encoding=\"utf-8\") as f:\n            return json.load(f)\n    except Exception:\n        return {}\n\n\ndef save_handles(data: dict[str, str]) -\u003e None:\n    with open(HANDLES_FILE, \"w\", encoding=\"utf-8\") as f:\n        json.dump(data, f, ensure_ascii=False, indent=2)\n\n\ndef get_daylight_fls(corr: Any) -\u003e list[Any]:\n    try:\n        bl = list(corr.Baselines)[0]\n        fl_map = bl.MainBaselineFeatureLines.FeatureLineCollectionMap\n        return list(fl_map[FL_CODE])\n    except Exception:\n        return []\n\n\ndef fl_xy_points(fl: Any) -\u003e list[tuple[float, float]]:\n    pts = []\n    for fp in fl.FeatureLinePoints:\n        xyz = fp.XYZ\n        pts.append((xyz.X, xyz.Y))\n    return pts\n\n\ndef seg_intersect_2d(\n    p1: tuple[float, float],\n    p2: tuple[float, float],\n    p3: tuple[float, float],\n    p4: tuple[float, float],\n) -\u003e tuple[float, float] | None:\n    x1, y1 = p1\n    x2, y2 = p2\n    x3, y3 = p3\n    x4, y4 = p4\n    dx12 = x2 - x1\n    dy12 = y2 - y1\n    dx34 = x4 - x3\n    dy34 = y4 - y3\n    denom = dx12 * dy34 - dy12 * dx34\n    if abs(denom) \u003c 1e-10:\n        return None\n    t = ((x3 - x1) * dy34 - (y3 - y1) * dx34) / denom\n    u = ((x3 - x1) * dy12 - (y3 - y1) * dx12) / denom\n    if 0.0 \u003c t \u003c 1.0 and 0.0 \u003c u \u003c 1.0:\n        return (x1 + t * dx12, y1 + t * dy12)\n    return None\n\n\ndef fix_self_intersections(\n    pts: list[tuple[float, float]],\n) -\u003e tuple[list[tuple[float, float]], int]:\n    \"\"\"Repair self-intersecting closed polygon: replace crossing segment pair with their intersection point.\"\"\"\n    fixes = 0\n    for _ in range(20):\n        n = len(pts)\n        found = False\n        for i in range(n):\n            i1 = (i + 1) % n\n            for j in range(i + 2, n):\n                j1 = (j + 1) % n\n                if j1 == i:  # adjacent at wrap-around\n                    continue\n                p = seg_intersect_2d(pts[i], pts[i1], pts[j], pts[j1])\n                if p is None:\n                    continue\n                # Remove the shorter loop: vertices between the two crossing segments.\n                loop_a = j - i  # vertices i+1..j\n                loop_b = n - loop_a  # vertices j+1..n-1 + 0..i\n                if loop_a \u003c= loop_b:\n                    pts = pts[: i + 1] + [p] + pts[j + 1 :]\n                else:\n                    pts = pts[i + 1 : j + 1] + [p]\n                fixes += 1\n                found = True\n                break\n            if found:\n                break\n        if not found:\n            break\n    return pts, fixes\n\n\ndef build_outline(\n    corr: Any,\n    db: Any,\n    tx: Any,\n    existing_map: dict[str, Any],\n    handles: dict[str, str],\n) -\u003e str:\n    name = corr.Name\n    fls = get_daylight_fls(corr)\n    if len(fls) \u003c 2:\n        return f\"SKIP (only {len(fls)} Daylight FL)\"\n\n    def first_offset(fl: Any) -\u003e float:\n        for fp in fl.FeatureLinePoints:\n            return float(fp.Offset)\n        return 0.0\n\n    off0 = first_offset(fls[0])\n    off1 = first_offset(fls[1])\n    if off0 \u003e= 0 and off1 \u003c 0:\n        fl_r, fl_l = fls[0], fls[1]\n    elif off1 \u003e= 0 and off0 \u003c 0:\n        fl_r, fl_l = fls[1], fls[0]\n    else:\n        fl_r, fl_l = fls[0], fls[1]\n\n    pts_r = fl_xy_points(fl_r)\n    pts_l = fl_xy_points(fl_l)\n    if not pts_r or not pts_l:\n        return \"SKIP (empty FL points)\"\n\n    outline = pts_r + list(reversed(pts_l))\n    outline, n_fixes = fix_self_intersections(outline)\n\n    # delete existing polyline for this corridor (overwrite)\n    if name in existing_map:\n        old = tx.GetObject(existing_map[name], OpenMode.ForWrite)\n        old.Erase()\n\n    pl = Polyline()\n    pl.Layer = OUTLINE_LAYER\n    for i, (x, y) in enumerate(outline):\n        pl.AddVertexAt(i, Point2d(x, y), 0, 0, 0)\n    pl.Closed = True\n\n    bt = tx.GetObject(db.BlockTableId, OpenMode.ForRead)\n    ms = tx.GetObject(bt.get_Item(BlockTableRecord.ModelSpace), OpenMode.ForWrite)\n    ms.AppendEntity(pl)\n    tx.AddNewlyCreatedDBObject(pl, True)\n\n    # store handle for use by build_corridor_surfaces\n    handles[name] = pl.Handle.ToString()\n\n    fix_note = f\"  fixed {n_fixes} crossing(s)\" if n_fixes else \"\"\n    return f\"OK ({len(outline)} vertices{fix_note})\"\n\n\nlog(\"=== draw_corridor_outlines ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\")\nlog(f\"layer: {OUTLINE_LAYER}  code: {FL_CODE!r}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ncivil_db = CivilApplication.ActiveDocument\n\nresults: list[str] = []\nhandles: dict[str, str] = {}\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ensure_layer(db, tx, OUTLINE_LAYER)\n\n        # load existing handle map to find polylines to overwrite\n        old_handles = load_handles()\n        existing_map: dict[str, Any] = {}\n        for cname, hstr in old_handles.items():\n            try:\n                from Autodesk.AutoCAD.DatabaseServices import Handle as AcHandle\n\n                oid = db.GetObjectId(False, AcHandle(int(hstr, 16)), 0)\n                if not oid.IsNull:\n                    existing_map[cname] = oid\n            except Exception:\n                pass\n\n        cc = civil_db.CorridorCollection\n        log(\n            f\"Corridors: {cc.Count}  existing outlines to overwrite: {len(existing_map)}\\n\"\n        )\n\n        for raw in safe_iter(cc):\n            corr = safe_resolve(raw, tx)\n            if corr is None:\n                continue\n            name = corr.Name\n            try:\n                status = build_outline(corr, db, tx, existing_map, handles)\n            except Exception as e:\n                status = f\"FAIL: {type(e).__name__}: {e}\"\n                log(traceback.format_exc())\n            line = f\"  {name:30s} {status}\"\n            log(line)\n            results.append(line)\n\n        ok = sum(1 for r in results if \"OK\" in r)\n        skip = sum(1 for r in results if \"SKIP\" in r)\n        fail = len(results) - ok - skip\n        log(f\"\\n--- {ok} OK, {skip} skipped, {fail} failed ---\")\n\n        tx.Commit()\n        log(\"transaction committed\")\n        save_handles(handles)\n        log(f\"handles saved: {len(handles)} corridors\")\n    except Exception as e:\n        log(f\"\\nERROR: {e}\\n{traceback.format_exc()}\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nlog(\"=== DONE ===\")\nOUT = \"\\n\".join(results)\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

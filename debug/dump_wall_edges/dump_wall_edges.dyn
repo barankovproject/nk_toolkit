@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "01c6a5b4-079b-48bb-b9af-ecd53fb8a021",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_brep_bottom",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump: find GSI ditch-wall blocks (inf_gsi_ditch_wall) with any edge chord \u003e 2.0 m.\n\nIteration 2 — the first pass found NO edge \u003e 2.0 among 189 blocks, yet the user\nmeasured 2.336 on V-5A-2. So now also: per-block XData tube tag (which tubes\u0027 walls\nare in this drawing at all), max same-face vertex-pair distance (a DIST snap across a\nface diagonal), and max any-vertex-pair distance (3D box diagonal). Regular 2x1x1\nblock: face diagonal 2.236, box diagonal 2.449 — report faces whose diagonal exceeds\n2.30 and blocks whose box diagonal exceeds 2.46, with the vertex pair coordinates.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport math\nimport os\nimport traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"acdbmgdbrep\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.BoundaryRepresentation import Brep\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode, Solid3d, SymbolUtilityServices\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_wall_edges\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_wall_edges_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n_LAYER = \"inf_gsi_ditch_wall\"\n_MAX_EDGE = 2.001\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef block_geom(sol):\n    \"\"\"(edges, faces) of a solid via Brep: unique edge chords + per-face vertex sets.\"\"\"\n    brep = Brep(sol)\n    seen = set()\n    edges = []\n    faces = []\n    for face in brep.Faces:\n        for loop in face.Loops:\n            for ed in loop.Edges:\n                p1 = ed.Vertex1.Point\n                p2 = ed.Vertex2.Point\n                a = (round(p1.X, 6), round(p1.Y, 6), round(p1.Z, 6))\n                b = (round(p2.X, 6), round(p2.Y, 6), round(p2.Z, 6))\n                key = (a, b) if a \u003c= b else (b, a)\n                if key in seen:\n                    continue\n                seen.add(key)\n                edges.append((a, b))\n    for face in brep.Faces:\n        fverts = set()\n        for loop in face.Loops:\n            for ed in loop.Edges:\n                p1 = ed.Vertex1.Point\n                p2 = ed.Vertex2.Point\n                fverts.add((round(p1.X, 6), round(p1.Y, 6), round(p1.Z, 6)))\n                fverts.add((round(p2.X, 6), round(p2.Y, 6), round(p2.Z, 6)))\n        faces.append(sorted(fverts))\n    return edges, faces\n\n\ndef max_pair(verts):\n    \"\"\"(dist, a, b) of the farthest vertex pair.\"\"\"\n    best = (0.0, None, None)\n    for i in range(len(verts)):\n        for j in range(i + 1, len(verts)):\n            d = math.dist(verts[i], verts[j])\n            if d \u003e best[0]:\n                best = (d, verts[i], verts[j])\n    return best\n\n\ndef read_tag(ent):\n    try:\n        rb = ent.GetXDataForApplication(\"ARHYZ_GSI\")\n    except Exception:\n        return None\n    if rb is None:\n        return None\n    vals = [str(v.Value) for v in list(rb) if v.TypeCode == 1000]\n    return tuple(vals[:2]) if len(vals) \u003e= 2 else None\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(f\"drawing: {db.Filename}\")\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead\n        )\n        n_blocks = 0\n        tubes = {}  # tag -\u003e [count, max_edge, max_face_diag, max_box_diag]\n        suspects = []  # (metric, text lines)\n        for oid in ms:\n            o = tx.GetObject(oid, OpenMode.ForRead)\n            if not (isinstance(o, Solid3d) and o.Layer == _LAYER):\n                continue\n            n_blocks += 1\n            tag = read_tag(o) or (\"?\", \"untagged\")\n            try:\n                edges, faces = block_geom(o)\n            except Exception as e:\n                log(f\"block {n_blocks} [{tag[1]}]: Brep failed: {e}\")\n                continue\n            max_edge = max((math.dist(a, b) for a, b in edges), default=0.0)\n            fd_best = (0.0, None, None)\n            for fverts in faces:\n                fd = max_pair(fverts)\n                if fd[0] \u003e fd_best[0]:\n                    fd_best = fd\n            all_verts = sorted({v for a, b in edges for v in (a, b)})\n            box = max_pair(all_verts)\n            st = tubes.setdefault(tag, [0, 0.0, 0.0, 0.0])\n            st[0] += 1\n            st[1] = max(st[1], max_edge)\n            st[2] = max(st[2], fd_best[0])\n            st[3] = max(st[3], box[0])\n            if max_edge \u003e _MAX_EDGE or fd_best[0] \u003e 2.30 or box[0] \u003e 2.46:\n                a, b = fd_best[1], fd_best[2]\n                suspects.append(\n                    (\n                        max(max_edge, fd_best[0]),\n                        f\"block #{n_blocks} [{tag[0]}/{tag[1]}] \"\n                        f\"max_edge={max_edge:.3f} face_diag={fd_best[0]:.3f} \"\n                        f\"box_diag={box[0]:.3f}\\n\"\n                        f\"    face_diag pair: A=({a[0]:.3f},{a[1]:.3f},{a[2]:.3f}) \"\n                        f\"B=({b[0]:.3f},{b[1]:.3f},{b[2]:.3f})\\n\"\n                        f\"    box pair: A={box[1]}  B={box[2]}\",\n                    )\n                )\n        log(f\"wall blocks scanned: {n_blocks}\")\n        log(\"per tube tag: count / max edge / max face diag / max box diag\")\n        for tag in sorted(tubes):\n            c, me, mf, mb = tubes[tag]\n            log(f\"    {tag[0]}/{tag[1]}: {c}  {me:.3f}  {mf:.3f}  {mb:.3f}\")\n        log(\"\")\n        log(\n            f\"suspect blocks (edge\u003e2.001 or face_diag\u003e2.30 or box_diag\u003e2.46): \"\n            f\"{len(suspects)}\"\n        )\n        for _, txt in sorted(suspects, reverse=True):\n            log(txt)\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

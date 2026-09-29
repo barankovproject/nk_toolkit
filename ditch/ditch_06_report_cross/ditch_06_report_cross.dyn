@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Read cross-ditch property sets and export a quantity ведомость + a slope table.\n\nTwo outputs, both read-only (stored values are never recomputed unless RECOMPUTE):\n  * ditch_volumes_\u003cts\u003e.csv  — per-trasse + total quantities (выемка / перемещение /\n    щебень / геотекстиль), summed from the Arhyz_CrossDitch property set, plus the\n    total built ditch length (length_total_m): the 3D length of every ditch part —\n    основа (main run) + соединитель (connector) + гаситель (apron) — measured from\n    the drawn polylines on the inf_md_ditch / inf_md_connector / inf_md_killer layer\n    families and grouped by trasse from the layer suffix.\n  * ditch_slopes_\u003cts\u003e.csv   — one row per ditch (Canal, Index, Station, ThetaDeg,\n    Slope, ZStart, ZEnd, Length2D, Status) with the longitudinal grade and a flag\n    for any ditch whose slope falls outside the target band [slope_min, slope_max].\n\nA rate change lives in ditch_04_build_cross/volumes.py alone (then a rebuild); the\nslope band lives in ditch_core/config.py (CONFIG.slope_min / slope_max).\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport csv\nimport datetime\nimport math\nimport os\nimport sys\nimport traceback\nfrom typing import Any, Optional\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"AecPropDataMgd\")\n\nimport Autodesk.Aec.PropertyData.DatabaseServices as _PD\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Polyline3d,\n    SymbolUtilityServices,\n)\n\n# Set True to recompute every ditch\u0027s volume PS from the current drawn geometry\n# before summing (same as running ditch_05_build_cross_volumes first). False = read-only:\n# sum whatever is already stored.\nRECOMPUTE = False\n\n_SCRIPTS_ROOT = r\"C:\\Arhyz\\automation\\scripts\\ditch\"\nif _SCRIPTS_ROOT not in sys.path:\n    sys.path.insert(0, _SCRIPTS_ROOT)\n\nfrom ditch_core.config import CONFIG, ELEV_SPLIT, trasse_for_layer  # noqa: E402  (needs _SCRIPTS_ROOT on sys.path)\n\n# Elevation-band labels for the ведомость split (by the ditch\u0027s нагорный/top end).\n_ZONE_BELOW = \"\u003c2500\"\n_ZONE_ABOVE = \"\u003e=2500\"\n\n\ndef _zone(top_z: float) -\u003e str:\n    \"\"\"Band a ditch/part by its highest elevation: at/above ELEV_SPLIT vs below.\"\"\"\n    return _ZONE_ABOVE if top_z \u003e= ELEV_SPLIT else _ZONE_BELOW\n\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\ditch\\ditch_06_report_cross\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nTIMESTAMP = datetime.datetime.now().strftime(\"%Y%m%d_%H%M%S\")\nLOG_FILE = os.path.join(LOG_DIR, f\"report_{TIMESTAMP}.log\")\nCSV_FILE = os.path.join(LOG_DIR, f\"ditch_volumes_{TIMESTAMP}.csv\")\nSLOPE_CSV = os.path.join(LOG_DIR, f\"ditch_slopes_{TIMESTAMP}.csv\")\n\n_PS_DEF = \"Arhyz_CrossDitch\"\n_LAYER = \"inf_md_ditch\"\n# Connector (соединитель) + гаситель (apron) layer families. These carry no PS,\n# only geometry, so the total ditch length is measured from their polylines and\n# grouped by trasse via the layer suffix (same convention as the ditch layer).\n_LAYER_CONN = \"inf_md_connector\"\n_LAYER_KILLER = \"inf_md_killer\"\n_FIELDS = (\"VolExcavation\", \"MoveTonnage\", \"VolStone\", \"VolGeotextile\")\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef _poly_len_3d(ent: Any, tx: Any) -\u003e float:\n    \"\"\"3D length of a Polyline3d (sum over its vertices); 0.0 for anything else.\n\n    Start-marker circles share the ditch layer but are not Polyline3d, so they\n    contribute nothing to the length.\n    \"\"\"\n    if not isinstance(ent, Polyline3d):\n        return 0.0\n    pts: list[tuple[float, float, float]] = []\n    for vid in ent:\n        try:\n            p = tx.GetObject(vid, OpenMode.ForRead).Position\n            pts.append((float(p.X), float(p.Y), float(p.Z)))\n        except Exception:\n            continue\n    return sum(\n        math.sqrt(\n            (pts[i + 1][0] - pts[i][0]) ** 2\n            + (pts[i + 1][1] - pts[i][1]) ** 2\n            + (pts[i + 1][2] - pts[i][2]) ** 2\n        )\n        for i in range(len(pts) - 1)\n    )\n\n\ndef _poly_maxz(ent: Any, tx: Any) -\u003e float:\n    \"\"\"Highest vertex Z of a Polyline3d (the part\u0027s top); -inf for anything else.\"\"\"\n    if not isinstance(ent, Polyline3d):\n        return float(\"-inf\")\n    zs: list[float] = []\n    for vid in ent:\n        try:\n            zs.append(float(tx.GetObject(vid, OpenMode.ForRead).Position.Z))\n        except Exception:\n            continue\n    return max(zs) if zs else float(\"-inf\")\n\n\ndef _psd_id(db: Any) -\u003e Any:\n    \"\"\"ObjectId of the Arhyz_CrossDitch PSD, or None if no ditches were ever built.\"\"\"\n    dpsd = _PD.DictionaryPropertySetDefinitions(db)\n    if _PS_DEF in list(dpsd.NamesInUse):\n        return dpsd.GetAt(_PS_DEF)\n    return None\n\n\ndef _read_ps(ent: Any, psd_id: Any, tx: Any) -\u003e Optional[dict[str, Any]]:\n    \"\"\"Return a dict of the ditch\u0027s stored fields, or None if it has no PS.\n\n    The trasse is the Canal label (e.g. \"1а\") stored on every ditch; ditches built\n    before that field existed fall back to \"(без трассы)\" so none are dropped.\n    Start-marker circles share the inf_md_ditch layer but carry no property set,\n    so GetPropertySet throws on them and they are skipped. Slope diagnostics are\n    read defensively (0.0 when a field predates the schema).\n    \"\"\"\n    try:\n        ps_id = _PD.PropertyDataServices.GetPropertySet(ent, psd_id)\n        ps = tx.GetObject(ps_id, OpenMode.ForRead)\n        trasse = str(ps.GetAt(ps.PropertyNameToId(\"Canal\"))).strip() or \"(без трассы)\"\n        vols = [float(ps.GetAt(ps.PropertyNameToId(f))) for f in _FIELDS]\n    except Exception:\n        return None\n\n    def _num(name: str) -\u003e float:\n        try:\n            return float(ps.GetAt(ps.PropertyNameToId(name)))\n        except Exception:\n            return 0.0\n\n    def _txt(name: str) -\u003e str:\n        try:\n            return str(ps.GetAt(ps.PropertyNameToId(name))).strip()\n        except Exception:\n            return \"\"\n\n    return {\n        \"trasse\": trasse,\n        \"vols\": vols,\n        \"index\": int(_num(\"Index\")),\n        \"station\": _num(\"Station\"),\n        \"theta\": _num(\"ThetaDeg\"),\n        \"slope\": _num(\"Slope\"),\n        \"z_start\": _num(\"ZStart\"),\n        \"z_end\": _num(\"ZEnd\"),\n        \"length_2d\": _num(\"Length2D\"),\n        \"status\": _txt(\"Status\"),\n    }\n\n\nlog(\"=== ditch_06_report_cross ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\n\n# (trasse, zone) -\u003e [count, exc_m3, move_t, stone_m3, geo_m2]\ntotals: dict[tuple[str, str], list[float]] = {}\n# (trasse, zone) -\u003e total built ditch length (m), summing the 3D length of every part:\n# основа (inf_md_ditch) + соединитель (inf_md_connector) + гаситель (inf_md_killer)\nlength_totals: dict[tuple[str, str], float] = {}\n# one entry per ditch for the slope table\nslope_rows: list[dict[str, Any]] = []\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        psd_id = _psd_id(db)\n        if psd_id is None:\n            log(\"No Arhyz_CrossDitch property set in this drawing — nothing to report.\")\n        else:\n            ms_id = SymbolUtilityServices.GetBlockModelSpaceId(db)\n            ms = tx.GetObject(ms_id, OpenMode.ForRead)\n            if RECOMPUTE:\n                from ditch_04_build_cross.refresh import refresh_volumes\n\n                n = refresh_volumes(ms, tx, psd_id, lambda m, level=\"INFO\": log(m))\n                log(f\"recomputed {n} ditch(es) from current geometry\\n\")\n            for oid in ms:\n                try:\n                    ent = tx.GetObject(oid, OpenMode.ForRead)\n                    layer = ent.Layer\n                except Exception:\n                    continue\n\n                # соединитель / гаситель: no PS, contribute only to the total\n                # built length; trasse comes from the layer suffix.\n                conn_t = trasse_for_layer(layer, _LAYER_CONN)\n                kill_t = trasse_for_layer(layer, _LAYER_KILLER)\n                if conn_t is not None or kill_t is not None:\n                    t = conn_t if conn_t is not None else kill_t\n                    key = (t, _zone(_poly_maxz(ent, tx)))\n                    length_totals[key] = length_totals.get(key, 0.0) + _poly_len_3d(\n                        ent, tx\n                    )\n                    continue\n\n                # основа: base layer + per-trasse layers inf_md_ditch_\u003ctrasse\u003e\n                if layer != _LAYER and not layer.startswith(_LAYER + \"_\"):\n                    continue\n                rec = _read_ps(ent, psd_id, tx)\n                if rec is None:\n                    continue\n                trasse = rec[\"trasse\"]\n                # band the ditch by its нагорный (highest) end: a ditch crossing the\n                # boundary counts entirely in the at/above band.\n                key = (trasse, _zone(max(rec[\"z_start\"], rec[\"z_end\"])))\n                exc, move, stone, geo = rec[\"vols\"]\n                acc = totals.setdefault(key, [0.0, 0.0, 0.0, 0.0, 0.0])\n                acc[0] += 1\n                acc[1] += exc\n                acc[2] += move\n                acc[3] += stone\n                acc[4] += geo\n                length_totals[key] = length_totals.get(key, 0.0) + _poly_len_3d(ent, tx)\n                slope_rows.append(rec)\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\\n{traceback.format_exc()}\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\n# ── quantity ведомость ──────────────────────────────────────────────────────\nheader = [\n    \"trasse\",\n    \"zone\",\n    \"ditch_count\",\n    \"length_total_m\",\n    \"excavation_m3\",\n    \"move_t\",\n    \"stone_m3\",\n    \"geotextile_m2\",\n]\nrows: list[list[Any]] = []\ngrand = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n# Union of keys: a part (connector/killer) may land in a different band than its run.\nfor key in sorted(set(totals) | set(length_totals)):\n    trasse, zone = key\n    c, exc, move, stone, geo = totals.get(key, [0.0, 0.0, 0.0, 0.0, 0.0])\n    length = length_totals.get(key, 0.0)\n    rows.append(\n        [\n            trasse,\n            zone,\n            int(c),\n            round(length, 2),\n            round(exc, 2),\n            round(move, 2),\n            round(stone, 2),\n            round(geo, 2),\n        ]\n    )\n    for i, v in enumerate((c, length, exc, move, stone, geo)):\n        grand[i] += v\n    log(\n        f\"  {trasse:18s} {zone:\u003e7}  n={int(c):\u003e3}  len={length:9.2f}  exc={exc:9.2f}  \"\n        f\"move={move:9.2f}  stone={stone:8.2f}  geo={geo:8.2f}\"\n    )\n\nif rows:\n    rows.append(\n        [\n            \"TOTAL\",\n            \"\",\n            int(grand[0]),\n            round(grand[1], 2),\n            round(grand[2], 2),\n            round(grand[3], 2),\n            round(grand[4], 2),\n            round(grand[5], 2),\n        ]\n    )\n    with open(CSV_FILE, \"w\", newline=\"\", encoding=\"utf-8-sig\") as f:\n        writer = csv.writer(f, delimiter=\";\")\n        writer.writerow(header)\n        writer.writerows(rows)\n    log(f\"\\n{len(rows) - 1} (trasse, zone) row(s) exported -\u003e {CSV_FILE}\")\n    OUT = CSV_FILE\nelse:\n    log(\"\\nNo tagged ditches found on layer inf_md_ditch.\")\n    OUT = LOG_FILE\n\n# ── slope table ─────────────────────────────────────────────────────────────\n# One row per ditch with the longitudinal grade; any slope outside the target\n# band [slope_min, slope_max] is flagged so a too-steep ditch (terrain-limited\n# out_of_band) is easy to spot. Sorted by trasse then station.\ns_min, s_max = CONFIG.slope_min, CONFIG.slope_max\nif slope_rows:\n    slope_rows.sort(key=lambda r: (r[\"trasse\"], r[\"station\"]))\n    s_header = [\n        \"trasse\",\n        \"index\",\n        \"station_m\",\n        \"theta_deg\",\n        \"slope\",\n        \"z_start\",\n        \"z_end\",\n        \"length_2d\",\n        \"status\",\n        \"out_of_band\",\n    ]\n    s_out: list[list[Any]] = []\n    n_oob = 0\n    log(f\"\\nSlope table (target band {s_min:.3f}..{s_max:.3f}):\")\n    for r in slope_rows:\n        oob = not (s_min \u003c= r[\"slope\"] \u003c= s_max)\n        n_oob += int(oob)\n        s_out.append(\n            [\n                r[\"trasse\"],\n                r[\"index\"],\n                round(r[\"station\"], 2),\n                round(r[\"theta\"], 1),\n                round(r[\"slope\"], 4),\n                round(r[\"z_start\"], 2),\n                round(r[\"z_end\"], 2),\n                round(r[\"length_2d\"], 2),\n                r[\"status\"],\n                \"YES\" if oob else \"\",\n            ]\n        )\n        log(\n            f\"  [{r[\u0027trasse\u0027]:\u003e6}] #{r[\u0027index\u0027]:\u003e3} sta={r[\u0027station\u0027]:8.2f} \"\n            f\"θ={r[\u0027theta\u0027]:4.0f}° slope={r[\u0027slope\u0027]:.4f} \"\n            f\"Z {r[\u0027z_start\u0027]:.2f}-\u003e{r[\u0027z_end\u0027]:.2f} {r[\u0027status\u0027]:12s}\"\n            f\"{\u0027  \u003c-- OUT OF BAND\u0027 if oob else \u0027\u0027}\"\n        )\n    with open(SLOPE_CSV, \"w\", newline=\"\", encoding=\"utf-8-sig\") as f:\n        writer = csv.writer(f, delimiter=\";\")\n        writer.writerow(s_header)\n        writer.writerows(s_out)\n    log(f\"\\n{len(slope_rows)} ditch(es) -\u003e {SLOPE_CSV}  ({n_oob} out of band)\")\n\nlog(\"=== DONE ===\")\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

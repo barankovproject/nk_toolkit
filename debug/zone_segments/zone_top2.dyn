@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Close недотяги (paired open ends), trace faces, draw the TWO largest enclosed areas.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Line,\n    Polyline,\n    LayerTableRecord,\n)\nfrom Autodesk.AutoCAD.Geometry import Point2d\nfrom Autodesk.AutoCAD.Colors import Color, ColorMethod\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\zone_segments\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"zone_top2_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nLAYER = \"Новые Откосы.Ситуация.Откосы\"\nOUT_LAYER = \"Контур_зоны\"\nEPS = 0.5\nBRIDGE = 60.0   # max distance to bridge a pair of open ends (m); long ribbon tails stay open\nTOP_N = 2\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef weld(segs, eps):\n    cell = eps if eps \u003e 0 else 1.0\n    grid: dict = {}\n    nodes: list = []\n\n    def get_node(x, y):\n        gx, gy = int(x // cell), int(y // cell)\n        for dx in (-1, 0, 1):\n            for dy in (-1, 0, 1):\n                for nid, nx, ny in grid.get((gx + dx, gy + dy), ()):\n                    if (nx - x) ** 2 + (ny - y) ** 2 \u003c= eps * eps:\n                        return nid\n        nid = len(nodes)\n        nodes.append((x, y))\n        grid.setdefault((gx, gy), []).append((nid, x, y))\n        return nid\n\n    edges = set()\n    for (x1, y1, x2, y2) in segs:\n        n1, n2 = get_node(x1, y1), get_node(x2, y2)\n        if n1 != n2:\n            edges.add((min(n1, n2), max(n1, n2)))\n    return nodes, edges\n\n\ndef bridge_open_ends(nodes, edges, bridge):\n    deg: dict = {}\n    for a, b in edges:\n        deg[a] = deg.get(a, 0) + 1\n        deg[b] = deg.get(b, 0) + 1\n    ends = [n for n in range(len(nodes)) if deg.get(n, 0) == 1]\n    pairs = []\n    for i in range(len(ends)):\n        for j in range(i + 1, len(ends)):\n            a, b = ends[i], ends[j]\n            d = math.hypot(nodes[a][0] - nodes[b][0], nodes[a][1] - nodes[b][1])\n            if d \u003c= bridge:\n                pairs.append((d, a, b))\n    pairs.sort()\n    used = set()\n    added = 0\n    for d, a, b in pairs:\n        if a in used or b in used:\n            continue\n        edges.add((min(a, b), max(a, b)))\n        used.add(a)\n        used.add(b)\n        added += 1\n        log(f\"  bridged open ends {a}\u003c-\u003e{b} gap={d:.2f} m\")\n    return added, len(ends)\n\n\ndef trace_faces(nodes, edges):\n    adj: dict = {}\n    for a, b in edges:\n        adj.setdefault(a, []).append(b)\n        adj.setdefault(b, []).append(a)\n    order: dict = {}\n    for u, nbrs in adj.items():\n        ux, uy = nodes[u]\n        order[u] = sorted(nbrs, key=lambda v: math.atan2(nodes[v][1] - uy, nodes[v][0] - ux))\n    pos = {u: {v: i for i, v in enumerate(lst)} for u, lst in order.items()}\n    visited = set()\n    faces = []\n    for a, b in edges:\n        for (u, v) in ((a, b), (b, a)):\n            if (u, v) in visited:\n                continue\n            face = []\n            cu, cv = u, v\n            guard = 0\n            while True:\n                visited.add((cu, cv))\n                face.append(cu)\n                lst = order[cv]\n                idx = pos[cv][cu]\n                nxt = lst[(idx - 1) % len(lst)]\n                cu, cv = cv, nxt\n                guard += 1\n                if (cu, cv) == (u, v) or guard \u003e len(edges) * 2 + 10:\n                    break\n            if len(face) \u003e= 3:\n                faces.append(face)\n    return faces\n\n\ndef signed_area(pts):\n    a = 0.0\n    n = len(pts)\n    for i in range(n):\n        x1, y1 = pts[i]\n        x2, y2 = pts[(i + 1) % n]\n        a += x1 * y2 - x2 * y1\n    return a / 2.0\n\n\ndef bbox(pts):\n    xs = [p[0] for p in pts]\n    ys = [p[1] for p in pts]\n    return min(xs), min(ys), max(xs), max(ys)\n\n\ndef ensure_layer(db, tx, name):\n    lt = tx.GetObject(db.LayerTableId, OpenMode.ForRead)\n    if lt.Has(name):\n        return\n    lt.UpgradeOpen()\n    ltr = LayerTableRecord()\n    ltr.Name = name\n    ltr.Color = Color.FromColorIndex(ColorMethod.ByAci, 1)\n    lt.Add(ltr)\n    tx.AddNewlyCreatedDBObject(ltr, True)\n\n\ndef draw_polyline(ms, tx, pts, layer):\n    pl = Polyline()\n    for i, (x, y) in enumerate(pts):\n        pl.AddVertexAt(i, Point2d(x, y), 0.0, 0.0, 0.0)\n    pl.Closed = True\n    pl.Layer = layer\n    ms.AppendEntity(pl)\n    tx.AddNewlyCreatedDBObject(pl, True)\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite)\n        segs = []\n        for oid in ms:\n            try:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n            except Exception:\n                continue\n            if isinstance(ent, Line) and getattr(ent, \"Layer\", None) == LAYER:\n                s, e = ent.StartPoint, ent.EndPoint\n                segs.append((s.X, s.Y, e.X, e.Y))\n\n        log(f\"layer [{LAYER}]: {len(segs)} segs; EPS={EPS} BRIDGE={BRIDGE}\")\n        nodes, edges = weld(segs, EPS)\n        added, nends = bridge_open_ends(nodes, edges, BRIDGE)\n        log(f\"nodes={len(nodes)}, edges={len(edges)}, open ends={nends}, bridged pairs={added}\")\n\n        faces = trace_faces(nodes, edges)\n        polys = [([nodes[n] for n in f]) for f in faces]\n        scored = sorted(((signed_area(p), p) for p in polys), key=lambda t: t[0], reverse=True)\n        log(f\"traced {len(faces)} faces\")\n        log(\"=== top 10 positive faces by area ===\")\n        for ar, p in scored[:10]:\n            bb = bbox(p)\n            log(f\"  area={ar:10.1f}  verts={len(p):4d}  bbox=({bb[0]:.0f},{bb[1]:.0f})-({bb[2]:.0f},{bb[3]:.0f})\")\n\n        ensure_layer(db, tx, OUT_LAYER)\n        drawn = 0\n        for ar, p in scored[:TOP_N]:\n            if ar \u003e 1.0:\n                draw_polyline(ms, tx, p, OUT_LAYER)\n                drawn += 1\n                bb = bbox(p)\n                log(f\"DREW face area={ar:.1f} verts={len(p)} bbox=({bb[0]:.0f},{bb[1]:.0f})-({bb[2]:.0f},{bb[3]:.0f})\")\n        log(f\"drawn {drawn} contour(s) on \u0027{OUT_LAYER}\u0027\")\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

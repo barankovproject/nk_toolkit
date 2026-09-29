@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump what Polyline.GetOffsetCurves returns for the НК-1А-3 gabion outline.\n\ndraw_gabion_view._rail_placements fell back to fan with \u0027rail offset produced\nnothing\u0027 — every offset candidate scored area 0 / \u003c= base. Log, per offset\ndirection, every returned curve: type, Closed, vertex count, Area (or the\nexception text if it throws), extents size, length.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, json, os, sys, traceback\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import Polyline\nfrom Autodesk.AutoCAD.Geometry import Point2d\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\n\nfrom civil.utils import normalize  # noqa: E402\nfrom paths import CANALS_DATA_DIR  # noqa: E402\n\nQUERY = \"НК-1А-3\"\nOFFSET = 4.0  # LAYOUT.rail_offset\n\nBASE = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_rail_offset\"\nLOG_DIR = os.path.join(BASE, \"logs\")\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_rail_offset_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n\ndef log(msg=\"\"):\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(str(msg) + \"\\n\")\n\n\ndef load_outline(query):\n    norm = normalize(query)\n    path = None\n    for fn in os.listdir(CANALS_DATA_DIR):\n        if fn.endswith(\".json\") and normalize(fn[:-5]) == norm:\n            path = os.path.join(CANALS_DATA_DIR, fn)\n            break\n    if path is None:\n        return None\n    sp = json.load(open(path, encoding=\"utf-8-sig\")).get(\"section_points\", {})\n    keys = sorted(sp.keys(), key=lambda k: float(k))\n    if len(keys) \u003c 2:\n        return None\n    return [sp[k][8][:2] for k in keys] + [sp[k][5][:2] for k in reversed(keys)]\n\n\ndef describe(curve, label):\n    log(f\"  [{label}] type={type(curve).__name__}\")\n    try:\n        log(f\"    Closed={curve.Closed}\")\n    except Exception as e:\n        log(f\"    Closed -\u003e EXC: {e}\")\n    try:\n        log(f\"    NumberOfVertices={curve.NumberOfVertices}\")\n    except Exception:\n        pass\n    try:\n        log(f\"    Area={float(curve.Area):.2f}\")\n    except Exception as e:\n        log(f\"    Area -\u003e EXC: {e}\")\n    try:\n        ext = curve.GeometricExtents\n        w = ext.MaxPoint.X - ext.MinPoint.X\n        h = ext.MaxPoint.Y - ext.MinPoint.Y\n        log(f\"    Extents {w:.2f} x {h:.2f}\")\n    except Exception as e:\n        log(f\"    Extents -\u003e EXC: {e}\")\n    try:\n        ln = float(curve.GetDistanceAtParameter(curve.EndParam))\n        log(f\"    Length={ln:.2f}\")\n    except Exception as e:\n        log(f\"    Length -\u003e EXC: {e}\")\n\n\ndef make_pline(pts):\n    pl = Polyline()\n    pl.SetDatabaseDefaults()\n    for i, (x, y) in enumerate(pts):\n        pl.AddVertexAt(i, Point2d(x, y), 0.0, 0.0, 0.0)\n    pl.Closed = True\n    return pl\n\n\ndef decimate(pts, tol):\n    \"\"\"Drop vertices closer than `tol` to the chord of their neighbours (collinear).\"\"\"\n    out = [pts[0]]\n    for k in range(1, len(pts) - 1):\n        ax, ay = out[-1]\n        bx, by = pts[k]\n        cx, cy = pts[k + 1]\n        dx, dy = cx - ax, cy - ay\n        m = (dx * dx + dy * dy) ** 0.5 or 1.0\n        d = abs((bx - ax) * dy - (by - ay) * dx) / m\n        if d \u003e tol:\n            out.append(pts[k])\n    out.append(pts[-1])\n    return out\n\n\ndef try_offset(pts, dist, label):\n    pl = make_pline(pts)\n    try:\n        curves = pl.GetOffsetCurves(dist)\n        info = []\n        for c in curves:\n            try:\n                a = f\"area={float(c.Area):.1f}\"\n            except Exception as e:\n                a = f\"area EXC: {e}\"\n            try:\n                cl = c.Closed\n            except Exception:\n                cl = \"?\"\n            info.append(f\"{type(c).__name__}(closed={cl}, {a})\")\n        log(f\"  {label}: dist={dist} -\u003e {len(info)} curve(s) {info}\")\n    except Exception as e:\n        log(f\"  {label}: dist={dist} -\u003e EXC: {e}\")\n    finally:\n        pl.Dispose()\n\n\ndef main():\n    loop = load_outline(QUERY)\n    if not loop:\n        log(f\"no section_points for \u0027{QUERY}\u0027\")\n        return\n    log(f\"\u0027{QUERY}\u0027: {len(loop)} outline verts, OFFSET={OFFSET}\")\n\n    # 1. does the gap type matter? (1=fillet is what the script uses)\n    for gt in (1, 0, 2):\n        Application.SetSystemVariable(\"OFFSETGAPTYPE\", gt)\n        try_offset(loop, OFFSET, f\"gaptype={gt}, full loop\")\n\n    # 2. does the distance matter? (fillet)\n    Application.SetSystemVariable(\"OFFSETGAPTYPE\", 1)\n    for dist in (0.5, 1.0, 2.0, 3.0):\n        try_offset(loop, dist, \"gaptype=1, full loop\")\n\n    # 3. does decimation help? (fillet, full distance)\n    for tol in (0.01, 0.05, 0.20):\n        dec = decimate(loop, tol)\n        log(f\"  decimated tol={tol}: {len(loop)} -\u003e {len(dec)} verts\")\n        try_offset(dec, OFFSET, f\"gaptype=1, decimated tol={tol}\")\n\n\nlog(\"=== DUMP RAIL OFFSET ===\")\ntry:\n    main()\n    log(\"=== DONE ===\")\nexcept Exception as e:\n    log(f\"ERROR: {e}\")\n    log(traceback.format_exc())\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

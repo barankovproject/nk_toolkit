@@ -1,0 +1,124 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_exc_callout_layout",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump the user\u0027s hand-tuned excavation BOTTOM (низ) callout layout.\n\nTwo things are captured so annotate_excavation_points/_rail_params_inner can be tuned:\n\n1. Reference rails — polylines the user drew at lineweight 0.50: external PURPLE\n   (фиолетовая) and internal YELLOW (жёлтая). Their vertices, colour and lineweight\n   are logged, and each is classified yellow-vs-other by ACI.\n\n2. Every point_number BlockReference — insertion (= contour vertex), the dynamic\n   props \"Отраженное состояние1\" (flip), \"Положение1 X/Y\", and the т.N text. From\n   those the RED point (polka↔leader junction) is reconstructed exactly as the\n   builder places it: red = insertion + (p1x + (1-2*flip)*POLKA_LEN, p1y). For each\n   callout the min distance from its red point to each rail is reported, so we can\n   read off which rail (inner/outer) it rides and the offset from the contour.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\nfrom typing import Any\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    AttributeReference,\n    BlockReference,\n    LineWeight,\n    OpenMode,\n    Polyline,\n    Polyline2d,\n    Polyline3d,\n    SymbolUtilityServices,\n)\n\nBASE = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_exc_callout_layout\"\nos.makedirs(os.path.join(BASE, \"logs\"), exist_ok=True)\nLOG = os.path.join(BASE, \"logs\", f\"dump_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n# Must match builder._POLKA_LEN so the reconstructed red point matches placement.\nPOLKA_LEN = 1.647\nLW_050 = int(LineWeight.LineWeight050)  # 50\n\n\ndef log(m: Any = \"\") -\u003e None:\n    with open(LOG, \"a\", encoding=\"utf-8\") as f:\n        f.write(str(m) + \"\\n\")\n\n\ndef eff_name(br: Any, tx: Any) -\u003e str:\n    try:\n        if br.IsDynamicBlock:\n            return tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead).Name\n    except Exception:\n        pass\n    return tx.GetObject(br.BlockTableRecord, OpenMode.ForRead).Name\n\n\ndef color_desc(ent: Any) -\u003e str:\n    try:\n        c = ent.Color\n        if c.IsByAci:\n            return f\"ACI={c.ColorIndex}\"\n        return f\"RGB=({c.Red},{c.Green},{c.Blue}) method={c.ColorMethod}\"\n    except Exception as e:\n        return f\"?({e})\"\n\n\ndef poly_vertices(ent: Any, tx: Any) -\u003e list[tuple[float, float]]:\n    out: list[tuple[float, float]] = []\n    if isinstance(ent, Polyline):\n        for i in range(ent.NumberOfVertices):\n            p = ent.GetPoint3dAt(i)\n            out.append((float(p.X), float(p.Y)))\n    elif isinstance(ent, Polyline3d):\n        for vid in ent:\n            try:\n                p = tx.GetObject(vid, OpenMode.ForRead).Position\n                out.append((float(p.X), float(p.Y)))\n            except Exception:\n                continue\n    elif isinstance(ent, Polyline2d):\n        for vid in ent:\n            try:\n                p = tx.GetObject(vid, OpenMode.ForRead).Position\n                out.append((float(p.X), float(p.Y)))\n            except Exception:\n                continue\n    return out\n\n\ndef pt_seg_dist(p, a, b) -\u003e float:\n    ax, ay = a\n    bx, by = b\n    dx, dy = bx - ax, by - ay\n    L2 = dx * dx + dy * dy\n    if L2 \u003c 1e-12:\n        return math.hypot(p[0] - ax, p[1] - ay)\n    t = max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L2))\n    return math.hypot(p[0] - (ax + dx * t), p[1] - (ay + dy * t))\n\n\ndef pt_poly_dist(p, verts, closed: bool) -\u003e float:\n    n = len(verts)\n    if n \u003c 2:\n        return float(\"inf\")\n    best = float(\"inf\")\n    segs = n if closed else n - 1\n    for k in range(segs):\n        d = pt_seg_dist(p, verts[k], verts[(k + 1) % n])\n        if d \u003c best:\n            best = d\n    return best\n\n\ndef _min_poly_dist(p, rails: list[dict]) -\u003e float:\n    best = float(\"inf\")\n    for r in rails:\n        d = pt_poly_dist(p, r[\"verts\"], r[\"closed\"])\n        if d \u003c best:\n            best = d\n    return best\n\n\ndef main(tx: Any, db: Any) -\u003e None:\n    ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n\n    # ── pass 1: the two reference rails: yellow ACI=2 (inner) + purple ACI=6 ──\n    # (magenta = фиолетовый). Both closed, lineweight 0.50. Ignore every other\n    # lineweight-0.50 polyline in the drawing.\n    yellows: list[dict] = []\n    purples: list[dict] = []\n    for oid in ms:\n        try:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n        except Exception:\n            continue\n        if not isinstance(ent, (Polyline, Polyline2d, Polyline3d)):\n            continue\n        try:\n            if int(ent.LineWeight) != LW_050:\n                continue\n        except Exception:\n            continue\n        cd = color_desc(ent)\n        rec = {\"verts\": poly_vertices(ent, tx), \"closed\": bool(getattr(ent, \"Closed\", False))}\n        if cd == \"ACI=2\":\n            yellows.append(rec)\n        elif cd == \"ACI=6\":\n            purples.append(rec)\n\n    log(\"=== REFERENCE RAILS ===\")\n    log(f\"yellow (inner, ACI=2): {len(yellows)}  purple (outer, ACI=6): {len(purples)}\")\n    for r in yellows:\n        log(f\"  yellow nverts={len(r[\u0027verts\u0027])} closed={r[\u0027closed\u0027]}\")\n    for r in purples:\n        log(f\"  purple nverts={len(r[\u0027verts\u0027])} closed={r[\u0027closed\u0027]}\")\n\n    # perpendicular gap between the rails: dist from each yellow vertex to purple\n    if yellows and purples:\n        gaps = [_min_poly_dist(v, purples) for r in yellows for v in r[\"verts\"]]\n        gaps.sort()\n        log(\n            f\"rail gap yellow→purple: min={gaps[0]:.3f} \"\n            f\"median={gaps[len(gaps)//2]:.3f} max={gaps[-1]:.3f} (m)\"\n        )\n\n    # ── pass 2: point_number callouts, keep only the BOTTOM set (near a rail) ──\n    rows: list[tuple] = []\n    for oid in ms:\n        try:\n            o = tx.GetObject(oid, OpenMode.ForRead)\n        except Exception:\n            continue\n        if not isinstance(o, BlockReference) or eff_name(o, tx).lower() != \"point_number\":\n            continue\n        if o.Layer == \"0\":\n            continue  # the manual source template\n        ins = o.Position\n        flip = pos1x = pos1y = None\n        try:\n            for p in o.DynamicBlockReferencePropertyCollection:\n                nm = p.PropertyName\n                if nm == \"Отраженное состояние1\":\n                    flip = float(p.Value)\n                elif nm == \"Положение1 X\":\n                    pos1x = float(p.Value)\n                elif nm == \"Положение1 Y\":\n                    pos1y = float(p.Value)\n        except Exception:\n            pass\n        text = \"\"\n        try:\n            for aoid in o.AttributeCollection:\n                a = tx.GetObject(aoid, OpenMode.ForRead)\n                if isinstance(a, AttributeReference):\n                    text = a.TextString\n                    break\n        except Exception:\n            pass\n        if None in (flip, pos1x, pos1y):\n            continue\n        red = (\n            ins.X + pos1x + (1.0 - 2.0 * flip) * POLKA_LEN,\n            ins.Y + pos1y,\n        )\n        d_in = _min_poly_dist(red, yellows) if yellows else float(\"inf\")\n        d_out = _min_poly_dist(red, purples) if purples else float(\"inf\")\n        if min(d_in, d_out) \u003e 4.0:\n            continue  # верх (top) callout — far from the bottom rails; skip\n        rows.append((text, ins.X, ins.Y, flip, red, d_in, d_out))\n\n    def keyf(r):\n        try:\n            return (0, int(r[0].replace(\"т.\", \"\").strip()))\n        except Exception:\n            return (1, 0)\n\n    rows.sort(key=keyf)\n    n_in = sum(1 for r in rows if r[5] \u003c= r[6])\n    log(f\"\\n=== BOTTOM CALLOUTS (near a rail) : {len(rows)} \"\n        f\"({n_in} inner, {len(rows) - n_in} outer) ===\")\n    for (text, ix, iy, flip, red, d_in, d_out) in rows:\n        near = \"INNER/yellow\" if d_in \u003c= d_out else \"OUTER/purple\"\n        # straight-line ins→red offset (rough perpendicular from contour)\n        off = math.hypot(red[0] - ix, red[1] - iy)\n        log(\n            f\"{text:\u003e6} flip={int(flip)} ins=({ix:.2f},{iy:.2f}) \"\n            f\"red=({red[0]:.2f},{red[1]:.2f}) off={off:.2f}  \"\n            f\"d_in={d_in:.2f} d_out={d_out:.2f} -\u003e {near}\"\n        )\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(\"=== DUMP EXCAVATION CALLOUT LAYOUT ===\")\n        main(tx, db)\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Выполнение встроенного сценария Python."
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+                                    {
+                                        "Name":  "dump_20260701_105051.log",
+                                        "ReferenceType":  "External",
+                                        "Nodes":  [
+                                                      "a1b2c3d4e5f678904abcdef123456781"
+                                                  ]
+                                    }
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "Нет",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  true,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "_Фоновый просмотр",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  834.41001594042973,
+                 "Y":  479.02729436734376,
+                 "Zoom":  1.7835993623828124
+             }
+}

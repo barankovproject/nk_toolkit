@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Trace ditch_core.solve_ditch\u0027s skew search at specific out-of-band stations.\n\nReplicates the candidate search from ditch_solver.solve_ditch but logs, for every\ntheta in BOTH rotation directions: whether each break-point was found and its\nstatus (break/edge/cap), za/zb, length2d, cut_side, z_cut/z_fill, slope, whether\nit drains correctly (z_cut \u003e z_fill) and whether the along-axis projection stays\nwithin step/2. The goal is to see WHY no theta lands slope in [slope_min, slope_max]\n— i.e. why the gentle along-contour orientation is not a kept candidate.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport math\nimport os\nimport sys\nimport traceback\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode  # noqa: F401\n\n_SCRIPTS_ROOT = r\"C:\\Arhyz\\automation\\scripts\\ditch\"\nif _SCRIPTS_ROOT not in sys.path:\n    sys.path.insert(0, _SCRIPTS_ROOT)\n_AUTOMATION = r\"C:\\Arhyz\\automation\"\nif _AUTOMATION not in sys.path:\n    sys.path.insert(0, _AUTOMATION)\n\n# The Dynamo CPython engine persists sys.modules across runs, so an edited\n# ditch_core module would otherwise be served stale from cache. Drop them first.\nfor _m in list(sys.modules):\n    if _m.startswith(\"ditch_core\") or _m.startswith(\"civil\"):\n        del sys.modules[_m]\n\nfrom ditch_core.config import CONFIG\nfrom ditch_core.cross_profile import break_point\nfrom ditch_core.geometry import classify_start_side, pick_theta, rotate\nfrom ditch_core.selection import find_alignment_and_surface\nfrom civil.alignment import AlignmentWrapper\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\ditch_solver_trace\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"ditch_solver_trace_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n# Stations to trace (m). 624.19 = 1e #3 (was 0.092 out_of_band). 107.2 / 206.41 =\n# 1e #8 / #9 (were already in band: 0.0216 / 0.0269) — controls that must NOT change.\nSTATIONS = [624.19, 107.2, 206.41]\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef _safe_elev(surface, x, y):\n    try:\n        return float(surface.FindElevationAtXY(x, y))\n    except Exception:\n        return None\n\n\ndef trace_station(surface, align_w, sta, cfg) -\u003e None:\n    log(\"\")\n    log(\"=\" * 78)\n    log(f\"STATION {sta:.3f}\")\n    log(\"=\" * 78)\n\n    cx, cy = align_w.xy_at(sta)\n    ang_ax = align_w.angle_at(sta)\n    ax, ay = math.cos(ang_ax), math.sin(ang_ax)\n    nx, ny = align_w.cross_axis_at(sta)\n\n    z_ax = _safe_elev(surface, cx, cy)\n    log(\n        f\"axis (x,y)=({cx:.2f},{cy:.2f}) z={z_ax}  ang_ax={math.degrees(ang_ax):.1f}deg\"\n    )\n    if z_ax is None:\n        log(\"axis off surface -\u003e solver returns None\")\n        return\n\n    gp = cfg.grade_probe\n    e_fwd = _safe_elev(surface, *align_w.xy_at(sta + gp))\n    e_back = _safe_elev(surface, *align_w.xy_at(sta - gp))\n    descend_along = 1.0\n    if e_fwd is not None and e_back is not None:\n        descend_along = 1.0 if e_fwd \u003c e_back else -1.0\n    log(\n        f\"grade probe +-{gp}m: e_fwd={e_fwd} e_back={e_back} descend_along={descend_along}\"\n    )\n\n    s_step = cfg.sample_step\n    reach = cfg.max_reach\n    thr = cfg.slope_break\n    half_step = cfg.step / 2.0\n    steep = cfg.scarp_min_slope\n    up_n, down_n = (nx, ny), (-nx, -ny)\n\n    pa0, sa0, sl_a0 = break_point(surface, cx, cy, nx, ny, s_step, reach, thr, steep)\n    pb0, sb0, sl_b0 = break_point(surface, cx, cy, -nx, -ny, s_step, reach, thr, steep)\n    za0 = _safe_elev(surface, pa0[0], pa0[1]) if pa0 is not None else 0.0\n    zb0 = _safe_elev(surface, pb0[0], pb0[1]) if pb0 is not None else 0.0\n    cut_side = classify_start_side(sl_a0, za0 or 0.0, sl_b0, zb0 or 0.0)\n    log(\n        f\"theta=0: side A {sa0} sl={sl_a0} za={za0:.2f} | \"\n        f\"side B {sb0} sl={sl_b0} zb={zb0:.2f} -\u003e cut_side={cut_side}\"\n    )\n\n    cut_dir = up_n if cut_side == \"a\" else down_n\n    perp_cut = (-cut_dir[1], cut_dir[0])\n    pc_dot = perp_cut[0] * ax + perp_cut[1] * ay\n    sgn = -descend_along if pc_dot \u003e 0 else descend_along\n    log(f\"pc_dot={pc_dot:.3f} sgn={sgn:+.0f}  (band [{cfg.slope_min},{cfg.slope_max}])\")\n    log(\n        f\"cfg: step={cfg.step} half_step={half_step} max_reach={reach} \"\n        f\"theta_max={cfg.theta_max_deg} theta_step={cfg.theta_step_deg} \"\n        f\"slope_break={thr} forbid_overlap={cfg.forbid_neighbour_overlap}\"\n    )\n\n    def search(sign: float):\n        log(\"\")\n        log(f\"--- search sign={sign:+.0f} ---\")\n        header = (\n            \"  th   Astat Bstat   za      zb     len   cut  z_cut  z_fill \"\n            \" slope  drain ovlp  -\u003e kept\"\n        )\n        log(header)\n        cands = []\n        data = {}\n        t = 0.0\n        while t \u003c= cfg.theta_max_deg + 1e-9:\n            ang = sign * math.radians(t)\n            ur = rotate(up_n[0], up_n[1], ang)\n            dr = rotate(down_n[0], down_n[1], ang)\n            pa_, sa_, sl_a_ = break_point(\n                surface, cx, cy, ur[0], ur[1], s_step, reach, thr, steep\n            )\n            pb_, sb_, sl_b_ = break_point(\n                surface, cx, cy, dr[0], dr[1], s_step, reach, thr, steep\n            )\n            row = f\"  {t:4.0f}  \"\n            if pa_ is None or pb_ is None:\n                log(row + f\"{str(sa_):5s} {str(sb_):5s}  (a or b None) -\u003e skip\")\n                t += cfg.theta_step_deg\n                continue\n            proj_a = (pa_[0] - cx) * ax + (pa_[1] - cy) * ay\n            proj_b = (pb_[0] - cx) * ax + (pb_[1] - cy) * ay\n            ovlp = max(abs(proj_a), abs(proj_b)) \u003e half_step\n            za_ = _safe_elev(surface, pa_[0], pa_[1])\n            zb_ = _safe_elev(surface, pb_[0], pb_[1])\n            if za_ is None or zb_ is None:\n                log(row + f\"{sa_:5s} {sb_:5s}  (za/zb None) -\u003e skip\")\n                t += cfg.theta_step_deg\n                continue\n            length = math.hypot(pb_[0] - pa_[0], pb_[1] - pa_[1])\n            z_cut = za_ if cut_side == \"a\" else zb_\n            z_fill = zb_ if cut_side == \"a\" else za_\n            drain = z_cut \u003e z_fill\n            slope = (z_cut - z_fill) / length if length \u003e 1e-6 else float(\"nan\")\n            ovlp_blocks = ovlp and cfg.forbid_neighbour_overlap\n            kept = drain and length \u003e 1e-6 and not ovlp_blocks\n            log(\n                row + f\"{sa_:5s} {sb_:5s} {za_:7.2f} {zb_:7.2f} {length:6.2f}  \"\n                f\"{cut_side}  {z_cut:6.2f} {z_fill:6.2f} {slope:7.4f} \"\n                f\"{\u0027Y\u0027 if drain else \u0027n\u0027:5s} {\u0027Y\u0027 if ovlp else \u0027.\u0027:4s} -\u003e \"\n                f\"{\u0027KEEP\u0027 if kept else \u0027drop\u0027}\"\n            )\n            if kept and not (ovlp and cfg.forbid_neighbour_overlap):\n                cands.append((t, slope))\n                data[t] = (pa_, pb_, za_, zb_, sl_a_, sl_b_, \"ok\")\n            if ovlp and cfg.forbid_neighbour_overlap:\n                log(f\"  {t:4.0f}  overlap guard would BREAK here (forbid_overlap=True)\")\n            t += cfg.theta_step_deg\n        return cands, data\n\n    cands, data = search(sgn)\n    log(\"\\n\u003e\u003e\u003e ALSO tracing opposite sense (-sgn) for comparison \u003c\u003c\u003c\")\n    cands_opp, data_opp = search(-sgn)\n    if cands_opp:\n        sl_opp = [s for _, s in cands_opp]\n        log(\n            f\"\\nopposite (-sgn) slope range: min={min(sl_opp):.4f} max={max(sl_opp):.4f} \"\n            f\"n={len(sl_opp)}\"\n        )\n        pick_opp = pick_theta(cands_opp, cfg.slope_min, cfg.slope_max)\n        if pick_opp is not None:\n            log(\n                f\"opposite (-sgn) pick_theta -\u003e theta={pick_opp[0]:.0f} slope={pick_opp[1]:.4f} \"\n                f\"in_band={cfg.slope_min \u003c= pick_opp[1] \u003c= cfg.slope_max}\"\n            )\n    if not cands:\n        log(\"\\nno candidates in aimed direction -\u003e using opposite\")\n        cands, _data = cands_opp, data_opp\n\n    pick = pick_theta(cands, cfg.slope_min, cfg.slope_max)\n    log(\"\")\n    if pick is None:\n        log(\"pick_theta -\u003e None (no candidate at all) -\u003e solver returns None\")\n    else:\n        th_sel, slope_sel = pick\n        in_band = cfg.slope_min \u003c= slope_sel \u003c= cfg.slope_max\n        log(\n            f\"pick_theta -\u003e theta={th_sel:.0f} slope={slope_sel:.4f} \"\n            f\"in_band={in_band} status={\u0027ok\u0027 if in_band else \u0027out_of_band\u0027}\"\n        )\n        slopes = [s for _, s in cands]\n        if slopes:\n            log(\n                f\"candidate slope range: min={min(slopes):.4f} max={max(slopes):.4f} \"\n                f\"n={len(slopes)}\"\n            )\n\n    # End-to-end check: call the REAL solver and report what it now returns.\n    from ditch_core.ditch_solver import solve_ditch\n\n    d = solve_ditch(surface, align_w, sta, cfg)\n    if d is None:\n        log(\"\\nREAL solve_ditch -\u003e None\")\n    else:\n        log(\n            f\"\\nREAL solve_ditch -\u003e theta={d.theta_deg:.0f} slope={d.slope:.4f} \"\n            f\"status={d.status}  top_z={d.top[2]:.2f} bot_z={d.bot[2]:.2f} \"\n            f\"drains={\u0027Y\u0027 if d.top[2] \u003e d.bot[2] else \u0027N\u0027}\"\n        )\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlog(f\"=== ditch_solver_trace {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\")\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        # list available alignments/surfaces for context\n        from Autodesk.Civil.ApplicationServices import CivilApplication\n        from Autodesk.Civil.DatabaseServices import Alignment, TinSurface\n\n        cdb = CivilApplication.ActiveDocument\n        a_names = []\n        for oid in cdb.GetAlignmentIds():\n            try:\n                e = tx.GetObject(oid, OpenMode.ForRead)\n                if isinstance(e, Alignment):\n                    a_names.append(e.Name)\n            except Exception:\n                pass\n        s_names = []\n        for oid in cdb.GetSurfaceIds():\n            try:\n                e = tx.GetObject(oid, OpenMode.ForRead)\n                if isinstance(e, TinSurface):\n                    s_names.append(e.Name)\n            except Exception:\n                pass\n        log(f\"alignments: {a_names}\")\n        log(f\"surfaces:   {s_names}\")\n        log(\n            f\"CONFIG.alignment_name=\u0027{CONFIG.alignment_name}\u0027 \"\n            f\"surface_name=\u0027{CONFIG.surface_name}\u0027 CANAL-check via config\"\n        )\n\n        align, surface = find_alignment_and_surface(\n            tx, CONFIG.alignment_name, CONFIG.surface_name\n        )\n        log(f\"using alignment \u0027{align.Name}\u0027, surface \u0027{surface.Name}\u0027\")\n        align_w = AlignmentWrapper(align, float(align.EndingStation))\n        log(f\"station range [{align.StartingStation:.2f}, {align.EndingStation:.2f}]\")\n\n        for sta in STATIONS:\n            try:\n                trace_station(surface, align_w, sta, CONFIG)\n            except Exception as e:\n                log(f\"station {sta} ERROR: {e}\")\n                log(traceback.format_exc())\n\n        log(\"\\n=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

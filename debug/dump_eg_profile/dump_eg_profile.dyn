@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump the EG (surface) profile PVIs / grade-break points along an alignment.\n\nPriority:\n  1. If a Profile is in the current pickfirst selection, dump that one.\n  2. Otherwise list every alignment, its profiles (name + type), and dump the\n     PVIs of each EG/surface profile found.\n\nFor each PVI: station, elevation, grade in/out and the deflection (Δgrade), so\nthe surface break points (future cross-ditch boundaries) are readable.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport datetime\nimport os\nimport traceback\n\nimport clr\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode\nfrom Autodesk.Civil.DatabaseServices import Profile, ProfileType\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_eg_profile\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_eg_profile_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef dump_profile(tx, prof) -\u003e None:\n    \"\"\"Log a profile\u0027s identity and all its PVIs with grades.\"\"\"\n    try:\n        ptype = str(prof.ProfileType)\n    except Exception as e:\n        ptype = f\"\u003ctype? {e}\u003e\"\n    log(f\"\\nProfile \u0027{prof.Name}\u0027  type={ptype}\")\n    try:\n        log(\n            f\"  station range: {float(prof.StartingStation):.3f} - \"\n            f\"{float(prof.EndingStation):.3f}  length={float(prof.Length):.3f}\"\n        )\n    except Exception as e:\n        log(f\"  station range: \u003cerror {e}\u003e\")\n\n    try:\n        pvis = prof.PVIs\n        n = pvis.Count\n    except Exception as e:\n        log(f\"  PVIs: \u003cunavailable: {e}\u003e\")\n        return\n\n    log(f\"  PVI count: {n}\")\n    rows = []\n    for pvi in pvis:\n        try:\n            sta = float(pvi.Station)\n            elev = float(pvi.Elevation)\n        except Exception as e:\n            log(f\"    PVI \u003cread error {e}\u003e\")\n            continue\n        gin = gout = None\n        for attr in (\"GradeIn\", \"GradeOut\"):\n            pass\n        try:\n            gin = float(pvi.GradeIn)\n        except Exception:\n            gin = None\n        try:\n            gout = float(pvi.GradeOut)\n        except Exception:\n            gout = None\n        rows.append((sta, elev, gin, gout))\n\n    for sta, elev, gin, gout in rows:\n        gin_s = f\"{gin * 100:+.2f}%\" if gin is not None else \"  --  \"\n        gout_s = f\"{gout * 100:+.2f}%\" if gout is not None else \"  --  \"\n        d_s = \"\"\n        if gin is not None and gout is not None:\n            d = (gout - gin) * 100\n            flag = \" ***\" if abs(d) \u003e 1.0 else \"\"\n            d_s = f\"  Δ={d:+.2f}%{flag}\"\n        log(f\"    sta {sta:9.3f}  elev {elev:9.3f}  in {gin_s}  out {gout_s}{d_s}\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ned = doc.Editor\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        # 1. pickfirst selection\n        psr = ed.SelectImplied()\n        picked_profiles = 0\n        if psr.Status.ToString() == \"OK\" and psr.Value is not None:\n            ids = list(psr.Value.GetObjectIds())\n            log(f\"pickfirst selection: {len(ids)} object(s)\")\n            for oid in ids:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n                log(f\"  selected: {type(ent).__name__}\")\n                if isinstance(ent, Profile):\n                    dump_profile(tx, ent)\n                    picked_profiles += 1\n        else:\n            log(\"pickfirst selection: empty\")\n\n        # 2. fall back to scanning all alignments\u0027 profiles\n        if picked_profiles == 0:\n            log(\"\\nNo profile in selection — scanning all alignments:\")\n            bt = tx.GetObject(db.BlockTableId, OpenMode.ForRead)\n            from Autodesk.AutoCAD.DatabaseServices import SymbolUtilityServices\n            from Autodesk.Civil.DatabaseServices import Alignment\n\n            ms = tx.GetObject(\n                SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead\n            )\n            aligns = []\n            for oid in ms:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n                if isinstance(ent, Alignment):\n                    aligns.append(ent)\n            log(f\"alignments in model space: {len(aligns)}\")\n            for al in aligns:\n                try:\n                    pids = list(al.GetProfileIds())\n                except Exception as e:\n                    log(f\"\\nalignment \u0027{al.Name}\u0027: profile ids error {e}\")\n                    continue\n                log(f\"\\nalignment \u0027{al.Name}\u0027: {len(pids)} profile(s)\")\n                for pid in pids:\n                    prof = tx.GetObject(pid, OpenMode.ForRead)\n                    is_eg = False\n                    try:\n                        is_eg = prof.ProfileType == ProfileType.EG\n                    except Exception:\n                        pass\n                    tag = \" [EG]\" if is_eg else \"\"\n                    log(f\"  - \u0027{prof.Name}\u0027 type={prof.ProfileType}{tag}\")\n                    if is_eg:\n                        dump_profile(tx, prof)\n\n        log(\"\\n=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

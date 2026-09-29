@@ -1,0 +1,12 @@
+{
+  "filter": {
+    "name": "Marked Ditches",
+    "expr": "NAME == \"inf_md_*\""
+  },
+  "layers": {
+    "inf_md_marker":    { "color": 2, "lineweight": 0.5, "linetype": "Continuous" },
+    "inf_md_ditch":     { "color": 6, "lineweight": 0.5, "linetype": "Continuous" },
+    "inf_md_connector": { "color": 4, "lineweight": 0.5, "linetype": "Continuous" },
+    "inf_md_killer":    { "color": 5, "lineweight": 0.5, "linetype": "Continuous" }
+  }
+}

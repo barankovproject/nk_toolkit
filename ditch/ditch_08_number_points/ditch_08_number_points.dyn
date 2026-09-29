@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Number the \"#\" attribute of every \"Номер_точки_канавы\" block in the drawing.\n\nA single running sequence 1..N across the WHOLE drawing (cross + longitudinal\nditches share one numbering). Order: each block\u0027s insertion point is projected onto\nthe configured alignment; blocks are sorted by station ascending, ties broken by Y\nthen X. If the alignment can\u0027t be found, falls back to (Y, X) ordering. Re-running\nrenumbers from 1, so it is idempotent.\n\nPlacement of the blocks is done by ditch_07_draw_point_blocks; this only fills `#`.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, os, sys, traceback\nfrom typing import Any, Optional\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    AttributeReference,\n    BlockReference,\n    OpenMode,\n    SymbolUtilityServices,\n)\n\n# Make ditch_core importable (single CONFIG for the whole ditch set).\n_LIB_ROOT = os.environ.get(\"ARHYZ_LIB_ROOT\", r\"C:\\Arhyz\\automation\\scripts\\ditch\")\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\nfor _name in [m for m in list(sys.modules) if m.startswith(\"ditch_core\")]:\n    del sys.modules[_name]\n\nfrom ditch_core.config import CONFIG\nfrom ditch_core.selection import find_alignment_and_surface\n\n# Must match ditch_07_draw_point_blocks._BLOCK_NAME and ._NUM_TAG.\n_BLOCK_NAME = \"Номер_точки_канавы\"\n_NUM_TAG = \"#\"\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\ditch\\ditch_08_number_points\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"number_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef _eff_name(br: Any, tx: Any) -\u003e str:\n    \"\"\"Effective block name (resolves the anonymous record of a dynamic block).\"\"\"\n    try:\n        if br.IsDynamicBlock:\n            return tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead).Name\n    except Exception:\n        pass\n    return tx.GetObject(br.BlockTableRecord, OpenMode.ForRead).Name\n\n\ndef _station(align: Any, x: float, y: float) -\u003e Optional[float]:\n    \"\"\"Station of (x, y) projected onto the alignment, or None if it won\u0027t project.\"\"\"\n    if align is None:\n        return None\n    try:\n        res = align.StationOffsetAcceptOutOfRange(x, y, 0.0, 0.0, False)\n        if isinstance(res, tuple) and len(res) \u003e= 3:\n            return float(res[-3])  # station, offset, outofrange\n    except Exception:\n        pass\n    try:\n        res = align.StationOffset(x, y, 0.0, 0.0)\n        if isinstance(res, tuple) and len(res) \u003e= 2:\n            return float(res[-2])  # station, offset\n    except Exception:\n        pass\n    return None\n\n\ndef _set_number(br: Any, tx: Any, value: int) -\u003e bool:\n    \"\"\"Write `value` into the block\u0027s `#` attribute. True if the tag was found.\"\"\"\n    for attr_oid in br.AttributeCollection:\n        a = tx.GetObject(attr_oid, OpenMode.ForWrite)\n        if isinstance(a, AttributeReference) and a.Tag.strip() == _NUM_TAG:\n            a.TextString = str(value)\n            return True\n    return False\n\n\ndef main(tx: Any, db: Any) -\u003e int:\n    try:\n        align, _surf = find_alignment_and_surface(\n            tx, CONFIG.alignment_name, CONFIG.surface_name\n        )\n        log(f\"alignment \u0027{align.Name}\u0027 — ordering by station\")\n    except Exception as e:\n        align = None\n        log(\n            f\"alignment not found ({e}); ordering by (Y, X)\",\n        )\n\n    ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n    # (sort_key, block_oid, x, y, station)\n    rows: list[\n        tuple[tuple[float, float, float], Any, float, float, Optional[float]]\n    ] = []\n    for oid in ms:\n        try:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n        except Exception:\n            continue\n        if not isinstance(ent, BlockReference):\n            continue\n        name = _eff_name(ent, tx)\n        if name.strip().lower() != _BLOCK_NAME.strip().lower():\n            continue\n        p = ent.Position\n        sta = _station(align, float(p.X), float(p.Y))\n        # Unprojectable points sort last (within station order) but keep a stable\n        # (Y, X) tie-break; with no alignment all share station 0 → pure (Y, X).\n        key = (sta if sta is not None else float(\"inf\"), float(p.Y), float(p.X))\n        rows.append((key, oid, float(p.X), float(p.Y), sta))\n\n    rows.sort(key=lambda r: r[0])\n    log(f\"found {len(rows)} \u0027{_BLOCK_NAME}\u0027 block(s)\")\n\n    numbered = 0\n    for i, (_key, oid, x, y, sta) in enumerate(rows, start=1):\n        br = tx.GetObject(oid, OpenMode.ForWrite)\n        if _set_number(br, tx, i):\n            numbered += 1\n            sta_s = f\"{sta:.2f}\" if sta is not None else \"n/a\"\n            log(f\"  #{i:\u003e3} -\u003e ({x:.2f}, {y:.2f})  sta={sta_s}\")\n        else:\n            log(f\"  #{i:\u003e3} at ({x:.2f}, {y:.2f}): no \u0027{_NUM_TAG}\u0027 attribute — skipped\")\n    return numbered\n\n\nlog(\"=== ditch_08_number_points ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nnumbered = 0\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        numbered = main(tx, db)\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\\n{traceback.format_exc()}\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\nlog(f\"\\n=== DONE: numbered={numbered} ===\")\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

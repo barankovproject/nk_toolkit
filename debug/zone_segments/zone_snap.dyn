@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Snap a rough hand-drawn closed polyline to the real banks/frame; draw a cleaned contour.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Line,\n    Polyline,\n    MText,\n    LayerTableRecord,\n)\nfrom Autodesk.AutoCAD.Geometry import Point2d\nfrom Autodesk.AutoCAD.Colors import Color, ColorMethod\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\zone_segments\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"zone_snap_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nOUT_LAYER = \"Контур_зоны\"\n# Layers whose Line entities are \"real boundary\" to snap onto.\nBOUNDARY_LINE_LAYERS = {\n    \"Новые Откосы.Ситуация.Откосы\",\n    \"Откосы.Поверхность.Структурные линии\",\n    \"0\",\n}\nRESAMPLE = 1.0     # densify the rough polyline to this step (m)\nSNAP_R = 40.0      # snap a resampled point to a real edge within this radius (m)\nSIMPLIFY_TOL = 0.3  # Douglas-Peucker tolerance (m): drop vertices within this of the chord\nFRAME_AREA_MIN = 1.0e6  # closed polylines larger than this are the frame, not a rough contour\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef poly_pts(pl):\n    return [(pl.GetPoint2dAt(i).X, pl.GetPoint2dAt(i).Y) for i in range(pl.NumberOfVertices)]\n\n\ndef poly_area(pts):\n    a = 0.0\n    n = len(pts)\n    for i in range(n):\n        x1, y1 = pts[i]\n        x2, y2 = pts[(i + 1) % n]\n        a += x1 * y2 - x2 * y1\n    return abs(a) / 2.0\n\n\ndef point_in_poly(px, py, pts):\n    inside = False\n    n = len(pts)\n    j = n - 1\n    for i in range(n):\n        xi, yi = pts[i]\n        xj, yj = pts[j]\n        if ((yi \u003e py) != (yj \u003e py)) and (px \u003c (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi):\n            inside = not inside\n        j = i\n    return inside\n\n\ndef resample(pts, step):\n    out = []\n    n = len(pts)\n    for i in range(n):\n        x1, y1 = pts[i]\n        x2, y2 = pts[(i + 1) % n]\n        seg = math.hypot(x2 - x1, y2 - y1)\n        k = max(1, int(seg / step))\n        for t in range(k):\n            f = t / k\n            out.append((x1 + f * (x2 - x1), y1 + f * (y2 - y1)))\n    return out\n\n\ndef nearest_on_seg(px, py, x1, y1, x2, y2):\n    dx, dy = x2 - x1, y2 - y1\n    L2 = dx * dx + dy * dy\n    if L2 == 0:\n        return (x1, y1), math.hypot(px - x1, py - y1)\n    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / L2))\n    qx, qy = x1 + t * dx, y1 + t * dy\n    return (qx, qy), math.hypot(px - qx, py - qy)\n\n\nclass Grid:\n    \"\"\"Spatial hash of boundary segments for fast nearest-segment queries.\"\"\"\n\n    def __init__(self, segs, cell):\n        self.cell = cell\n        self.segs = segs\n        self.idx = {}\n        for k, (x1, y1, x2, y2) in enumerate(segs):\n            for (cx, cy) in self._cells(x1, y1, x2, y2):\n                self.idx.setdefault((cx, cy), []).append(k)\n\n    def _cells(self, x1, y1, x2, y2):\n        c = self.cell\n        n = max(1, int(math.hypot(x2 - x1, y2 - y1) / c))\n        out = set()\n        for t in range(n + 1):\n            f = t / n\n            out.add((int((x1 + f * (x2 - x1)) // c), int((y1 + f * (y2 - y1)) // c)))\n        return out\n\n    def nearest(self, px, py, rmax):\n        c = self.cell\n        gx, gy = int(px // c), int(py // c)\n        rc = int(rmax // c) + 1\n        best, bestd = None, rmax\n        seen = set()\n        for dx in range(-rc, rc + 1):\n            for dy in range(-rc, rc + 1):\n                for k in self.idx.get((gx + dx, gy + dy), ()):\n                    if k in seen:\n                        continue\n                    seen.add(k)\n                    q, d = nearest_on_seg(px, py, *self.segs[k])\n                    if d \u003c bestd:\n                        best, bestd = q, d\n        return best, bestd\n\n\ndef rdp(points, eps):\n    \"\"\"Iterative Douglas-Peucker: drop vertices closer than eps to the chord they span.\n\n    Removes points that lie (within eps) on a straight line between kept neighbours.\n    `points` is an open path; for a closed ring, append the first point before calling.\n    \"\"\"\n    n = len(points)\n    if n \u003c 3:\n        return points[:]\n    keep = [False] * n\n    keep[0] = keep[-1] = True\n    stack = [(0, n - 1)]\n    while stack:\n        s, e = stack.pop()\n        x1, y1 = points[s]\n        x2, y2 = points[e]\n        dx, dy = x2 - x1, y2 - y1\n        L2 = dx * dx + dy * dy\n        dmax, idx = 0.0, -1\n        for i in range(s + 1, e):\n            px, py = points[i]\n            if L2 == 0:\n                d = math.hypot(px - x1, py - y1)\n            else:\n                t = ((px - x1) * dx + (py - y1) * dy) / L2\n                qx, qy = x1 + t * dx, y1 + t * dy\n                d = math.hypot(px - qx, py - qy)\n            if d \u003e dmax:\n                dmax, idx = d, i\n        if dmax \u003e eps and idx != -1:\n            keep[idx] = True\n            stack.append((s, idx))\n            stack.append((idx, e))\n    return [points[i] for i in range(n) if keep[i]]\n\n\ndef ensure_layer(db, tx, name):\n    lt = tx.GetObject(db.LayerTableId, OpenMode.ForRead)\n    if lt.Has(name):\n        return\n    lt.UpgradeOpen()\n    ltr = LayerTableRecord()\n    ltr.Name = name\n    ltr.Color = Color.FromColorIndex(ColorMethod.ByAci, 1)\n    lt.Add(ltr)\n    tx.AddNewlyCreatedDBObject(ltr, True)\n\n\ndef draw_polyline(ms, tx, pts, layer):\n    pl = Polyline()\n    for i, (x, y) in enumerate(pts):\n        pl.AddVertexAt(i, Point2d(x, y), 0.0, 0.0, 0.0)\n    pl.Closed = True\n    pl.Layer = layer\n    ms.AppendEntity(pl)\n    tx.AddNewlyCreatedDBObject(pl, True)\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite)\n        bound_segs = []\n        markers = []\n        rough = []          # (pts, area, oid) candidate rough contours\n        out_oids = []       # existing OUT_LAYER entities to delete\n        for oid in ms:\n            try:\n                ent = tx.GetObject(oid, OpenMode.ForRead)\n            except Exception:\n                continue\n            ly = getattr(ent, \"Layer\", None)\n            if ly == OUT_LAYER:\n                out_oids.append(oid)\n                continue\n            if isinstance(ent, Line) and ly in BOUNDARY_LINE_LAYERS:\n                s, e = ent.StartPoint, ent.EndPoint\n                bound_segs.append((s.X, s.Y, e.X, e.Y))\n            elif isinstance(ent, Polyline):\n                pts = poly_pts(ent)\n                ar = poly_area(pts)\n                if ent.Closed and ar \u003e= FRAME_AREA_MIN:\n                    # the frame: a real boundary to snap onto\n                    for i in range(len(pts)):\n                        a = pts[i]\n                        b = pts[(i + 1) % len(pts)]\n                        bound_segs.append((a[0], a[1], b[0], b[1]))\n                elif ent.Closed and ar \u003e 100.0:\n                    rough.append((pts, ar, oid))\n            elif isinstance(ent, MText) and ent.Text in (\"1\", \"2\"):\n                p = ent.Location\n                markers.append((ent.Text, p.X, p.Y))\n\n        log(f\"boundary segs={len(bound_segs)}, rough candidates={len(rough)}, markers={markers}\")\n        for pts, ar, _ in rough:\n            xs = [p[0] for p in pts]\n            ys = [p[1] for p in pts]\n            log(f\"  rough: nverts={len(pts)} area={ar:.1f} \"\n                f\"bbox=({min(xs):.0f},{min(ys):.0f})-({max(xs):.0f},{max(ys):.0f})\")\n\n        # delete previous OUT_LAYER outputs\n        for oid in out_oids:\n            try:\n                tx.GetObject(oid, OpenMode.ForWrite).Erase()\n            except Exception:\n                pass\n        log(f\"erased {len(out_oids)} old \u0027{OUT_LAYER}\u0027 entities\")\n\n        if not rough:\n            log(\"NO rough contour found — draw a closed polyline around the zone and re-run.\")\n            log(\"=== DONE ===\")\n            tx.Commit()\n        else:\n            grid = Grid(bound_segs, cell=10.0)\n            ensure_layer(db, tx, OUT_LAYER)\n            drawn = 0\n            for pts, ar, oid in rough:\n                rs = resample(pts, RESAMPLE)\n                snapped = []\n                n_snap = 0\n                for (px, py) in rs:\n                    q, d = grid.nearest(px, py, SNAP_R)\n                    if q is not None:\n                        snapped.append(q)\n                        n_snap += 1\n                    else:\n                        snapped.append((px, py))\n                # dedupe consecutive duplicates\n                clean = [snapped[0]]\n                for p in snapped[1:]:\n                    if math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) \u003e 0.05:\n                        clean.append(p)\n                # thin out collinear / near-collinear vertices (closed ring)\n                simp = rdp(clean + [clean[0]], SIMPLIFY_TOL)\n                if len(simp) \u003e 1 and simp[-1] == simp[0]:\n                    simp = simp[:-1]\n                draw_polyline(ms, tx, simp, OUT_LAYER)\n                drawn += 1\n                log(f\"  rough(area={ar:.0f}): {len(rs)} samples, {n_snap} snapped \"\n                    f\"({100*n_snap/len(rs):.0f}%), snapped verts={len(clean)} \"\n                    f\"-\u003e simplified={len(simp)} (tol={SIMPLIFY_TOL} m)\")\n            log(f\"drawn {drawn} cleaned contour(s) on \u0027{OUT_LAYER}\u0027\")\n            log(\"=== DONE ===\")\n            tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

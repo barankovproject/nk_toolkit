@@ -1,0 +1,214 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "anchor_01_build_surfaces",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "import clr, importlib, os, sys\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\ntry:\n    _LIB_ROOT = os.path.dirname(\n        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n    )\nexcept NameError:\n    _LIB_ROOT = os.environ.get(\"ARHYZ_LIB_ROOT\", r\"C:\\Arhyz\\automation\\scripts\\anchor\")\n\n_AUTOMATION_ROOT = os.path.dirname(_LIB_ROOT)\n\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\nif _AUTOMATION_ROOT not in sys.path:\n    sys.path.insert(0, _AUTOMATION_ROOT)\n\n# Drop this package so the next import reloads every submodule fresh in\n# dependency order (see ditch_04_build_cross/launcher.py for the rationale).\nfor _name in [m for m in list(sys.modules) if m.startswith(\"anchor_\")]:\n    del sys.modules[_name]\nfor _name in sorted(\n    [m for m in sys.modules if m.startswith(\"civil\")],\n    reverse=True,\n):\n    try:\n        importlib.reload(sys.modules[_name])\n    except Exception:\n        pass\n\nfrom anchor_01_build_surfaces.builder import AnchorSurfaceBuilder\n\n# IN[0] / IN[1] come from the two \"Select Object\" nodes (surface + boundary\n# polyline, in either order). Build one flat surface per CSV elevation. Returns\n# the log file path.\n_inputs = list(globals().get(\"IN\", []))\nOUT = AnchorSurfaceBuilder().run(_inputs)\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+                                     {
+                                         "Id":  "f6b94173067a4e1ea59cb371f4ab12af",
+                                         "Name":  "IN[0]",
+                                         "Description":  "Input #0",
+                                         "UsingDefaultValue":  false,
+                                         "Level":  2,
+                                         "UseLevels":  false,
+                                         "KeepListStructure":  false
+                                     },
+                                     {
+                                         "Id":  "28690c67d6794e469d9527549a16af8a",
+                                         "Name":  "IN[1]",
+                                         "Description":  "Input #1",
+                                         "UsingDefaultValue":  false,
+                                         "Level":  2,
+                                         "UseLevels":  false,
+                                         "KeepListStructure":  false
+                                     }
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Выполнение встроенного сценария Python."
+                  },
+                  {
+                      "ConcreteType":  "Autodesk.AutoCAD.DynamoNodes.ObjectSelection, AutoCADNodesUI",
+                      "NodeType":  "ExtensionNode",
+                      "InstanceId":  [
+                                         "40441"
+                                     ],
+                      "Id":  "7b4fce0dee9c4294b6ef0f6def9820b0",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "5857cee62c424ebbbb3cb4bfdb630713",
+                                          "Name":  "Object",
+                                          "Description":  "Object",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Выбор объекта в текущем документе."
+                  },
+                  {
+                      "ConcreteType":  "Autodesk.AutoCAD.DynamoNodes.ObjectSelection, AutoCADNodesUI",
+                      "NodeType":  "ExtensionNode",
+                      "InstanceId":  [
+                                         "D6D7"
+                                     ],
+                      "Id":  "52685a18e9dd4d0fb00dd82a002b527b",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "c6bc66e13e434ed89abcce5691ae1773",
+                                          "Name":  "Object",
+                                          "Description":  "Object",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Выбор объекта в текущем документе."
+                  }
+              ],
+    "Connectors":  [
+                       {
+                           "Start":  "5857cee62c424ebbbb3cb4bfdb630713",
+                           "End":  "f6b94173067a4e1ea59cb371f4ab12af",
+                           "Id":  "c09efaedb6f84a78ac0d76a5cef7b063",
+                           "IsHidden":  "False"
+                       },
+                       {
+                           "Start":  "c6bc66e13e434ed89abcce5691ae1773",
+                           "End":  "28690c67d6794e469d9527549a16af8a",
+                           "Id":  "63f7c8a85a614d96a7d5cb4d2732a3d4",
+                           "IsHidden":  "False"
+                       }
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "Нет",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "_Фоновый просмотр",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   },
+                                   {
+                                       "Id":  "7b4fce0dee9c4294b6ef0f6def9820b0",
+                                       "Name":  "Select Object",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  -531.5,
+                                       "Y":  -120.0
+                                   },
+                                   {
+                                       "Id":  "52685a18e9dd4d0fb00dd82a002b527b",
+                                       "Name":  "Select Object",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  -424.5,
+                                       "Y":  141.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  556.47261948581661,
+                 "Y":  287.84519532611012,
+                 "Zoom":  0.95404292488281262
+             }
+}

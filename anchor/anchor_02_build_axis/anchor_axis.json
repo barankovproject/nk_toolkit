@@ -1,0 +1,21 @@
+{
+  "axis_handle": "41E94",
+  "layer": "inf_md_anchor_axis",
+  "elevation": 18.0,
+  "source_elevations": [
+    10.0,
+    12.0,
+    14.0,
+    16.0,
+    18.0,
+    20.0,
+    22.0,
+    24.0,
+    26.0
+  ],
+  "min_segment": 6.0,
+  "angle_tol": 20.0,
+  "vertices": 7,
+  "segments": 6,
+  "length": 87.19861625425703
+}

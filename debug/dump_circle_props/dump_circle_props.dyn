@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump dynamic properties and attribute definitions of the point_number_circle block.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    AttributeDefinition,\n    BlockReference,\n    OpenMode,\n)\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_circle_props\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"dump_circle_props_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nBLOCK = \"point_number_circle\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        bt = tx.GetObject(db.BlockTableId, OpenMode.ForRead)\n\n        # ── block DEFINITION: entities + attribute definitions ────────────────\n        if bt.Has(BLOCK):\n            btr = tx.GetObject(bt[BLOCK], OpenMode.ForRead)\n            log(f\"definition \u0027{BLOCK}\u0027: IsDynamicBlock={btr.IsDynamicBlock}\")\n            for ent_id in btr:\n                ent = tx.GetObject(ent_id, OpenMode.ForRead)\n                tname = type(ent).__name__\n                if isinstance(ent, AttributeDefinition):\n                    log(f\"  entity {tname}: Tag={ent.Tag!r} Constant={ent.Constant}\")\n                else:\n                    log(f\"  entity {tname} class={ent_id.ObjectClass.Name}\")\n        else:\n            log(f\"definition \u0027{BLOCK}\u0027: NOT IN BLOCK TABLE\")\n\n        # ── first REFERENCE with matching effective name ──────────────────────\n        from Autodesk.AutoCAD.DatabaseServices import SymbolUtilityServices\n        ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n        found = 0\n        for oid in ms:\n            if oid.ObjectClass.Name != \"AcDbBlockReference\":\n                continue\n            br = tx.GetObject(oid, OpenMode.ForRead)\n            try:\n                btr_ref = tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead)\n                eff = btr_ref.Name\n            except Exception:\n                eff = br.Name\n            if eff != BLOCK:\n                continue\n            found += 1\n            log()\n            log(f\"reference #{found}: Name={br.Name!r} EffectiveName={eff!r} \"\n                f\"IsDynamicBlock={br.IsDynamicBlock} Layer={br.Layer!r}\")\n            props = br.DynamicBlockReferencePropertyCollection\n            log(f\"  dynamic properties: {props.Count}\")\n            for prop in props:\n                log(f\"    PropertyName={prop.PropertyName!r} Value={prop.Value!r} \"\n                    f\"ReadOnly={prop.ReadOnly} UnitsType={prop.UnitsType} \"\n                    f\"TypeCode={prop.PropertyTypeCode}\")\n            log(f\"  attributes on reference: {br.AttributeCollection.Count}\")\n            for attr_oid in br.AttributeCollection:\n                attr = tx.GetObject(attr_oid, OpenMode.ForRead)\n                log(f\"    ATTREF Tag={attr.Tag!r} Text={attr.TextString!r}\")\n            if found \u003e= 3:\n                break\n        if found == 0:\n            log()\n            log(f\"no reference of \u0027{BLOCK}\u0027 found in model space\")\n\n        log()\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

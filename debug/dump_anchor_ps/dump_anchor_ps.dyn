@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Report same-row anchor gaps \u003e 4 m, by anchor Number (from the PS).\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport math\nimport os\nimport traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"AecPropDataMgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import Circle, OpenMode\nimport Autodesk.Aec.PropertyData.DatabaseServices as _PD\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_anchor_ps\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"ps_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\nPTS_LAYER = \"inf_md_anchor_pts\"\nPS_DEF = \"Arhyz_Anchor\"\nLIMIT = 4.0\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        dpsd = _PD.DictionaryPropertySetDefinitions(db)\n        psd_id = dpsd.GetAt(PS_DEF) if PS_DEF in list(dpsd.NamesInUse) else None\n\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForRead)\n        items = []  # (z, x, y, number)\n        for oid in ms:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n            if not (isinstance(ent, Circle) and ent.Layer == PTS_LAYER):\n                continue\n            c = ent.Center\n            num = None\n            if psd_id is not None:\n                try:\n                    ps = tx.GetObject(\n                        _PD.PropertyDataServices.GetPropertySet(ent, psd_id),\n                        OpenMode.ForRead,\n                    )\n                    num = ps.GetAt(ps.PropertyNameToId(\"Number\"))\n                except Exception:\n                    pass\n            items.append((round(float(c.Z), 3), float(c.X), float(c.Y), num))\n\n        log(f\"circles: {len(items)}   limit: {LIMIT} m\")\n        rows = {}\n        for z, x, y, num in items:\n            rows.setdefault(z, []).append((x, y, num))\n\n        total = 0\n        for z in sorted(rows):\n            pts = sorted(rows[z])  # west -\u003e east\n            over = []\n            for i in range(len(pts) - 1):\n                d = math.dist((pts[i][0], pts[i][1]), (pts[i + 1][0], pts[i + 1][1]))\n                if d \u003e LIMIT:\n                    over.append((pts[i][2], pts[i + 1][2], d))\n            if over:\n                log(f\"\\nz{z}: {len(over)} gap(s) \u003e {LIMIT} m\")\n                for a, b, d in over:\n                    log(f\"  #{a} -- #{b}:  {d:.2f} m\")\n                total += len(over)\n        log(f\"\\ntotal gaps \u003e {LIMIT} m: {total}\")\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

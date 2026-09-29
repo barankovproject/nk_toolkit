@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump the example GSI kolodec: enumerate all Solid3d + polylines in model space.\n\nGoal: learn how 1.5x1x1 gabion blocks are laid out in the ring (orientation via\nbbox dims, tiers by Z, corner handling) and how the 6x2x0.5 bottom mats relate to\nthe outer dashed polyline. For each solid we log its bbox (min/max, dx/dy/dz), the\nimplied block size class, the bbox center, and its layer. For each polyline we log\nits layer, closed flag, and vertices.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    OpenMode,\n    Polyline,\n    Polyline2d,\n    Polyline3d,\n    Solid3d,\n    SymbolUtilityServices,\n)\n\nBASE = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_gsi_kolodec\"\nos.makedirs(os.path.join(BASE, \"logs\"), exist_ok=True)\nLOG = os.path.join(BASE, \"logs\", f\"dump_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n\ndef log(m=\"\"):\n    with open(LOG, \"a\", encoding=\"utf-8\") as f:\n        f.write(str(m) + \"\\n\")\n\n\ndef classify(dx, dy, dz):\n    \"\"\"Guess block class from sorted bbox dims.\"\"\"\n    dims = sorted([dx, dy, dz])\n\n    def near(a, b):\n        return abs(a - b) \u003c= 0.15\n\n    if near(dims[0], 0.5) and near(dims[1], 2.0) and near(dims[2], 6.0):\n        return \"MAT 6x2x0.5\"\n    if near(dims[0], 1.0) and near(dims[1], 1.0) and near(dims[2], 1.5):\n        return \"GABION 1.5x1x1\"\n    return \"?\"\n\n\ndef main(tx, db):\n    ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n    solids = []\n    plines = []\n    for oid in ms:\n        o = tx.GetObject(oid, OpenMode.ForRead)\n        if isinstance(o, Solid3d):\n            solids.append(o)\n        elif isinstance(o, (Polyline, Polyline2d, Polyline3d)):\n            plines.append(o)\n\n    log(f\"solids: {len(solids)}   polylines: {len(plines)}\")\n\n    # per-layer summary: count + z-bottom histogram, so mine (inf_gsi_well_*) and the\n    # manual example (layer \u00270\u0027) can be compared side by side.\n    by_layer: dict = {}\n    for s in solids:\n        try:\n            ext = s.GeometricExtents\n            zb = round(ext.MinPoint.Z, 2)\n            d = by_layer.setdefault(s.Layer, {})\n            d[zb] = d.get(zb, 0) + 1\n        except Exception:\n            pass\n    log(\"\")\n    log(\"=== SOLIDS PER LAYER (z_bottom histogram) ===\")\n    for lay in sorted(by_layer):\n        tot = sum(by_layer[lay].values())\n        hist = \"  \".join(f\"z{z:.2f}:{c}\" for z, c in sorted(by_layer[lay].items()))\n        log(f\"layer \u0027{lay}\u0027: {tot} solids | {hist}\")\n\n    log(\"\")\n    log(\"=== POLYLINES ===\")\n    for p in plines:\n        lay = p.Layer\n        typ = type(p).__name__\n        try:\n            n = p.NumberOfVertices\n            verts = []\n            for i in range(n):\n                pt = p.GetPoint3dAt(i)\n                verts.append(f\"({pt.X:.3f},{pt.Y:.3f},{pt.Z:.3f})\")\n            closed = p.Closed\n            log(f\"[{typ}] layer=\u0027{lay}\u0027 closed={closed} nverts={n}\")\n            for v in verts:\n                log(f\"    {v}\")\n        except Exception as e:\n            log(f\"[{typ}] layer=\u0027{lay}\u0027 vertex-read-error: {e}\")\n\n    log(\"\")\n    log(\"=== SOLID3D (sorted by Z then Y then X of bbox center) ===\")\n    rows = []\n    for s in solids:\n        try:\n            ext = s.GeometricExtents\n            mn, mx = ext.MinPoint, ext.MaxPoint\n            dx, dy, dz = mx.X - mn.X, mx.Y - mn.Y, mx.Z - mn.Z\n            cx, cy, cz = (mn.X + mx.X) / 2, (mn.Y + mx.Y) / 2, (mn.Z + mx.Z) / 2\n            rows.append((cz, cy, cx, dx, dy, dz, s.Layer))\n        except Exception as e:\n            log(f\"solid bbox error: {e}\")\n    rows.sort(key=lambda r: (round(r[0], 2), round(r[1], 2), round(r[2], 2)))\n    for cz, cy, cx, dx, dy, dz, lay in rows:\n        cls = classify(dx, dy, dz)\n        log(\n            f\"[{cls:14s}] layer=\u0027{lay}\u0027 center=({cx:.3f},{cy:.3f},{cz:.3f}) \"\n            f\"dims dx={dx:.3f} dy={dy:.3f} dz={dz:.3f}\"\n        )\n\n    # z-level histogram to see tiers\n    log(\"\")\n    log(\"=== Z-BOTTOM LEVELS (tier detection) ===\")\n    zbottoms = {}\n    for s in solids:\n        try:\n            ext = s.GeometricExtents\n            zb = round(ext.MinPoint.Z, 2)\n            zbottoms[zb] = zbottoms.get(zb, 0) + 1\n        except Exception:\n            pass\n    for zb in sorted(zbottoms):\n        log(f\"  z_bottom={zb:.2f}  count={zbottoms[zb]}\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(\"=== DUMP GSI KOLODEC ===\")\n        main(tx, db)\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

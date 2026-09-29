@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Extract the toe-of-slope (подошва) as the slope-break line of a picked TIN and draw it.\n\nThe floor (дно) is sloped (pipe invert grade), so the toe is NOT a contour. It is the set\nof TIN edges between \u0027steep\u0027 (side-slope) triangles and \u0027gentle\u0027 (floor) triangles. We\nclassify each triangle by slope, collect mixed-class shared edges, and draw them red on\nlayer DBG_TOE for visual confirmation. Logs a triangle-slope histogram to tune _THR.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.Colors import Color, ColorMethod\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    Line,\n    OpenMode,\n    SymbolUtilityServices,\n    LayerTable,\n    LayerTableRecord,\n)\nfrom Autodesk.AutoCAD.EditorInput import PromptEntityOptions\nfrom Autodesk.AutoCAD.Geometry import Point3d\nfrom Autodesk.Civil.DatabaseServices import TinSurface\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_excavation_surface\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"toe_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n# Steep/gentle split (rise/run). 0.5 = 1:2. Side slopes are far steeper than the floor.\n_THR = 0.5\n_DBG_LAYER = \"DBG_TOE\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef tri_slope(p1, p2, p3) -\u003e float:\n    \"\"\"rise/run of the steepest line on the triangle plane (0=flat, big=steep/vertical).\"\"\"\n    ax, ay, az = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]\n    bx, by, bz = p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]\n    nx = ay * bz - az * by\n    ny = az * bx - ax * bz\n    nz = ax * by - ay * bx\n    horiz = math.hypot(nx, ny)\n    if abs(nz) \u003c 1e-12:\n        return 999.0\n    return horiz / abs(nz)\n\n\ndef ensure_layer(db, tx, name):\n    lt = tx.GetObject(db.LayerTableId, OpenMode.ForRead)\n    if lt.Has(name):\n        return\n    lt.UpgradeOpen()\n    ltr = LayerTableRecord()\n    ltr.Name = name\n    ltr.Color = Color.FromColorIndex(ColorMethod.ByAci, 1)  # red\n    lt.Add(ltr)\n    tx.AddNewlyCreatedDBObject(ltr, True)\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ned = doc.Editor\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        opts = PromptEntityOptions(\"\\nВыберите поверхность откопки: \")\n        opts.SetRejectMessage(\"\\nНужна TIN-поверхность.\")\n        opts.AddAllowedClass(TinSurface, False)\n        per = ed.GetEntity(opts)\n        if int(per.Status) != 5100:\n            log(f\"pick cancelled, status={int(per.Status)}\")\n            raise SystemExit\n        surf = tx.GetObject(per.ObjectId, OpenMode.ForRead)\n        log(f\"surface \u0027{surf.Name}\u0027  threshold _THR={_THR}\")\n\n        tris = surf.GetTriangles(False)  # visible only\n        # edge_key (sorted vertex coords) -\u003e list of triangle slope-classes (True=steep)\n        edge_cls = {}\n        slopes = []\n        n_tri = 0\n\n        def vkey(p):\n            return (round(p[0], 3), round(p[1], 3))\n\n        for t in tris:\n            try:\n                v1, v2, v3 = t.Vertex1.Location, t.Vertex2.Location, t.Vertex3.Location\n            except Exception:\n                continue\n            p1 = (float(v1.X), float(v1.Y), float(v1.Z))\n            p2 = (float(v2.X), float(v2.Y), float(v2.Z))\n            p3 = (float(v3.X), float(v3.Y), float(v3.Z))\n            s = tri_slope(p1, p2, p3)\n            slopes.append(s)\n            steep = s \u003e= _THR\n            n_tri += 1\n            for a, b in ((p1, p2), (p2, p3), (p3, p1)):\n                k = tuple(sorted((vkey(a), vkey(b))))\n                edge_cls.setdefault(k, []).append((steep, a, b))\n\n        log(f\"triangles: {n_tri}\")\n        if slopes:\n            hist = {}\n            for s in slopes:\n                bb = min(int(s / 0.25), 8)  # bins of 0.25 up to \u003e=2.0\n                hist[bb] = hist.get(bb, 0) + 1\n            log(\"triangle-slope histogram (rise/run bins):\")\n            for bb in sorted(hist):\n                lo = bb * 0.25\n                lab = f\"\u003e={lo:.2f}\" if bb == 8 else f\"{lo:.2f}..{lo + 0.25:.2f}\"\n                log(f\"  {lab}: {hist[bb]}\")\n\n        # toe edges = shared edges with one steep + one gentle triangle\n        ensure_layer(db, tx, _DBG_LAYER)\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite\n        )\n        n_toe, length = 0, 0.0\n        for k, lst in edge_cls.items():\n            if len(lst) != 2:\n                continue  # border edge or non-manifold\n            if lst[0][0] == lst[1][0]:\n                continue  # same class → not a break\n            _, a, b = lst[0]\n            ln = Line(Point3d(*a), Point3d(*b))\n            ln.Layer = _DBG_LAYER\n            ms.AppendEntity(ln)\n            tx.AddNewlyCreatedDBObject(ln, True)\n            n_toe += 1\n            length += math.dist(a, b)\n        log(f\"toe break edges drawn: {n_toe}, total length {length:.1f} (layer {_DBG_LAYER})\")\n\n        log(\"\\n=== DONE ===\")\n        tx.Commit()\n    except SystemExit:\n        log(\"=== aborted (no pick) ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

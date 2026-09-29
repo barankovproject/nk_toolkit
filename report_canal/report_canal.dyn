@@ -1,0 +1,169 @@
+﻿{
+    "Uuid":  "f1e2d3c4-b5a6-7890-abcd-ef0123456789",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "canal_report",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "import clr, importlib, os, sys\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\ntry:\n    _LIB_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\nexcept NameError:\n    _LIB_ROOT = os.environ.get(\"ARHYZ_LIB_ROOT\", r\"C:\\Arhyz\\automation\\scripts\")\n\n_AUTOMATION_ROOT = os.path.dirname(_LIB_ROOT)\n\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\nif _AUTOMATION_ROOT not in sys.path:\n    sys.path.insert(0, _AUTOMATION_ROOT)\n\nfor _name in sorted(\n    [\n        m\n        for m in sys.modules\n        if m.startswith(\"report_canal\") or m.startswith(\"civil\") or m == \"paths\"\n    ],\n    reverse=True,\n):\n    try:\n        importlib.reload(sys.modules[_name])\n    except Exception:\n        del sys.modules[_name]\n\nfrom report_canal.report_builder import ReportBuilder\n\nOUT = ReportBuilder(IN[0]).run()\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f67890abc1def234567890",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+                                     {
+                                         "Id":  "53f320f9e570415caaea147489d6655b",
+                                         "Name":  "IN[0]",
+                                         "Description":  "Input #0",
+                                         "UsingDefaultValue":  false,
+                                         "Level":  2,
+                                         "UseLevels":  false,
+                                         "KeepListStructure":  false
+                                     }
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "b2c3d4e5f6a78901bcd2ef3456789012",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Выполнение встроенного сценария Python."
+                  },
+                  {
+                      "ConcreteType":  "CoreNodeModels.Input.StringInput, CoreNodeModels",
+                      "Id":  "81d77de675b641619aa38eed078817b5",
+                      "NodeType":  "StringInputNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "cdbbcb4abbc247d48786be76413cc496",
+                                          "Name":  "",
+                                          "Description":  "String",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Создание строки.",
+                      "InputValue":  "НК-1А-1"
+                  }
+              ],
+    "Connectors":  [
+                       {
+                           "Start":  "cdbbcb4abbc247d48786be76413cc496",
+                           "End":  "53f320f9e570415caaea147489d6655b",
+                           "Id":  "cf1e1aee7b754022ab551e940048a8f6",
+                           "IsHidden":  "False"
+                       }
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+                                    {
+                                        "Name":  "НК-1A-1.csv",
+                                        "ReferenceType":  "External",
+                                        "Nodes":  [
+                                                      "a1b2c3d4e5f67890abc1def234567890"
+                                                  ]
+                                    }
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "Нет",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  true,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "_Фоновый просмотр",
+                                "EyeX":  -17.0,
+                                "EyeY":  24.0,
+                                "EyeZ":  50.0,
+                                "LookX":  12.0,
+                                "LookY":  -13.0,
+                                "LookZ":  -58.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f67890abc1def234567890",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   },
+                                   {
+                                       "Id":  "81d77de675b641619aa38eed078817b5",
+                                       "Name":  "String",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  -226.67906658191305,
+                                       "Y":  -34.746199046935772
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  257.31788532806172,
+                 "Y":  422.45708159853058,
+                 "Zoom":  1.1047642563030273
+             }
+}

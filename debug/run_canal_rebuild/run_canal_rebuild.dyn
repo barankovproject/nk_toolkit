@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Rebuild NK-1E-2 and NK-3A-1 canal models to verify the PI sliver / miter wedge fixes.\"\"\"\r\n\r\nfrom __future__ import annotations\r\n\r\nimport datetime\r\nimport importlib\r\nimport os\r\nimport sys\r\nimport traceback\r\n\r\nimport clr\r\n\r\nclr.AddReference(\"AecBaseMgd\")\r\nclr.AddReference(\"AeccDbMgd\")\r\nclr.AddReference(\"acmgd\")\r\nclr.AddReference(\"acdbmgd\")\r\n\r\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\r\n_AUTOMATION_ROOT = os.path.dirname(_LIB_ROOT)\r\nfor _p in (_LIB_ROOT, _AUTOMATION_ROOT):\r\n    if _p not in sys.path:\r\n        sys.path.insert(0, _p)\r\n\r\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\run_canal_rebuild\\logs\"\r\nos.makedirs(LOG_DIR, exist_ok=True)\r\nLOG_FILE = os.path.join(\r\n    LOG_DIR, f\"run_canal_rebuild_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\r\n)\r\n\r\n\r\ndef log(msg: str = \"\") -\u003e None:\r\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\r\n        f.write(msg + \"\\n\")\r\n\r\n\r\n# hot-reload (same ordering as build_canal_model launcher)\r\ndef _reload_key(n: str) -\u003e tuple[int, str]:\r\n    parts = n.split(\".\")\r\n    if len(parts) == 1:\r\n        return (2, n)\r\n    if parts[-1] == \"canal_builder\":\r\n        return (1, n)\r\n    return (0, n)\r\n\r\n\r\nfor _name in sorted(\r\n    [\r\n        m\r\n        for m in sys.modules\r\n        if m.startswith(\"build_canal_model\") or m.startswith(\"civil\") or m == \"paths\"\r\n    ],\r\n    key=_reload_key,\r\n):\r\n    try:\r\n        importlib.reload(sys.modules[_name])\r\n    except Exception:\r\n        del sys.modules[_name]\r\n\r\nfrom build_canal_model.canal_builder import CanalBuilder\r\n\r\n# \"NK-1E-2\" / \"NK-3A-1\" with Cyrillic letters as unicode escapes (ASCII-safe for the .dyn)\r\n_NK = chr(0x41D) + chr(0x41A)  # \"NK\" in Cyrillic\r\nQUERIES = [_NK + \"-1A-6\"]\r\n\r\nfor q in QUERIES:\r\n    try:\r\n        result = CanalBuilder(q).run()\r\n        log(f\"query={q!r}: {result}\")\r\n    except Exception as e:\r\n        log(f\"query={q!r} FAILED: {e}\")\r\n        log(traceback.format_exc())\r\nlog(\"=== DONE ===\")\r\n\r\nOUT = LOG_FILE\r\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

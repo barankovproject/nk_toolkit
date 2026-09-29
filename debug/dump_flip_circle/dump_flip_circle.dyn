@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Clone point_number_circle, set flip, log ATTDEF/ATTREF positions before/after.\"\"\"\nfrom __future__ import annotations\n\nimport clr, datetime, os, traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nimport System\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    AttributeDefinition,\n    AttributeReference,\n    IdMapping,\n    ObjectIdCollection,\n    OpenMode,\n    SymbolUtilityServices,\n)\nfrom Autodesk.AutoCAD.Geometry import Matrix3d, Vector3d\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_flip_circle\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(LOG_DIR, f\"dump_flip_circle_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\nBLOCK = \"point_number_circle\"\nFLIP_PROP = \"Отраженное состояние1\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef dump_btr_attdefs(tx, btr_id, label):\n    btr = tx.GetObject(btr_id, OpenMode.ForRead)\n    log(f\"  {label}: BTR name={btr.Name!r}\")\n    for ent_id in btr:\n        ent = tx.GetObject(ent_id, OpenMode.ForRead)\n        if isinstance(ent, AttributeDefinition):\n            log(f\"    ATTDEF Tag={ent.Tag!r} Position=({ent.Position.X:.3f}, \"\n                f\"{ent.Position.Y:.3f}) Justify={ent.Justify}\")\n\n\ndef dump_attrefs(tx, br, label):\n    log(f\"  {label}: ATTREF count={br.AttributeCollection.Count}\")\n    for attr_oid in br.AttributeCollection:\n        attr = tx.GetObject(attr_oid, OpenMode.ForRead)\n        log(f\"    ATTREF Tag={attr.Tag!r} Position=({attr.Position.X:.3f}, \"\n            f\"{attr.Position.Y:.3f}) Alignment=({attr.AlignmentPoint.X:.3f}, \"\n            f\"{attr.AlignmentPoint.Y:.3f}) Justify={attr.Justify} \"\n            f\"Text={attr.TextString!r}\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        bt = tx.GetObject(db.BlockTableId, OpenMode.ForRead)\n        ms_id = SymbolUtilityServices.GetBlockModelSpaceId(db)\n        ms = tx.GetObject(ms_id, OpenMode.ForRead)\n\n        # find template reference\n        src_oid = None\n        for oid in ms:\n            if oid.ObjectClass.Name != \"AcDbBlockReference\":\n                continue\n            br = tx.GetObject(oid, OpenMode.ForRead)\n            try:\n                eff = tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead).Name\n            except Exception:\n                eff = br.Name\n            if eff == BLOCK:\n                src_oid = oid\n                break\n        if src_oid is None:\n            log(f\"no reference of \u0027{BLOCK}\u0027 in model space\")\n            raise SystemExit\n\n        src = tx.GetObject(src_oid, OpenMode.ForRead)\n        log(f\"template: Name={src.Name!r} IsDynamic={src.IsDynamicBlock} \"\n            f\"pos=({src.Position.X:.3f}, {src.Position.Y:.3f})\")\n        dump_btr_attdefs(tx, src.BlockTableRecord, \"template current BTR\")\n        dump_attrefs(tx, src, \"template\")\n\n        # clone\n        ids = ObjectIdCollection()\n        ids.Add(src_oid)\n        id_map = IdMapping()\n        db.DeepCloneObjects(ids, ms_id, id_map, False)\n        new_oid = None\n        for pair in id_map:\n            if pair.Key == src_oid:\n                new_oid = pair.Value\n        br = tx.GetObject(new_oid, OpenMode.ForWrite)\n        br.TransformBy(Matrix3d.Displacement(Vector3d(5.0, 5.0, 0.0)))\n        log()\n        log(\"clone created at +5,+5\")\n        dump_btr_attdefs(tx, br.BlockTableRecord, \"clone BTR BEFORE anything\")\n\n        # ensure attributes (same as _ensure_attributes)\n        if br.AttributeCollection.Count == 0:\n            btr = tx.GetObject(br.BlockTableRecord, OpenMode.ForRead)\n            for ent_id in btr:\n                ent = tx.GetObject(ent_id, OpenMode.ForRead)\n                if not isinstance(ent, AttributeDefinition) or ent.Constant:\n                    continue\n                ar = AttributeReference()\n                ar.SetAttributeFromBlock(ent, br.BlockTransform)\n                br.AttributeCollection.AppendAttribute(ar)\n                tx.AddNewlyCreatedDBObject(ar, True)\n        dump_attrefs(tx, br, \"clone AFTER ensure_attributes, BEFORE flip\")\n\n        # set flip\n        set_ok = False\n        for prop in br.DynamicBlockReferencePropertyCollection:\n            if prop.ReadOnly or prop.PropertyName != FLIP_PROP:\n                continue\n            try:\n                prop.Value = System.Int16(1)\n            except Exception:\n                prop.Value = System.Boolean(True)\n            set_ok = True\n        log()\n        log(f\"flip set: {set_ok}\")\n\n        # re-read after flip\n        for prop in br.DynamicBlockReferencePropertyCollection:\n            if prop.PropertyName == FLIP_PROP:\n                log(f\"  flip value now = {prop.Value!r}\")\n        dump_btr_attdefs(tx, br.BlockTableRecord, \"clone BTR AFTER flip\")\n        dump_attrefs(tx, br, \"clone AFTER flip\")\n\n        # label the flip-only clone\n        for attr_oid in br.AttributeCollection:\n            attr = tx.GetObject(attr_oid, OpenMode.ForWrite)\n            attr.TextString = \"т.А\"\n\n        # ── second clone: flip + re-sync ATTREF from the flipped ATTDEF ───────\n        db.DeepCloneObjects(ids, ms_id, id_map2 := IdMapping(), False)\n        oid2 = None\n        for pair in id_map2:\n            if pair.Key == src_oid:\n                oid2 = pair.Value\n        br2 = tx.GetObject(oid2, OpenMode.ForWrite)\n        br2.TransformBy(Matrix3d.Displacement(Vector3d(5.0, 10.0, 0.0)))\n        if br2.AttributeCollection.Count == 0:\n            btr2 = tx.GetObject(br2.BlockTableRecord, OpenMode.ForRead)\n            for ent_id in btr2:\n                ent = tx.GetObject(ent_id, OpenMode.ForRead)\n                if not isinstance(ent, AttributeDefinition) or ent.Constant:\n                    continue\n                ar = AttributeReference()\n                ar.SetAttributeFromBlock(ent, br2.BlockTransform)\n                br2.AttributeCollection.AppendAttribute(ar)\n                tx.AddNewlyCreatedDBObject(ar, True)\n        for prop in br2.DynamicBlockReferencePropertyCollection:\n            if not prop.ReadOnly and prop.PropertyName == FLIP_PROP:\n                try:\n                    prop.Value = System.Int16(1)\n                except Exception:\n                    prop.Value = System.Boolean(True)\n        # FIX under test (final callout_rail logic): re-anchor on the evaluated\n        # BTR\u0027s ATTDEF, then swap justification to the mirrored side.\n        from Autodesk.AutoCAD.DatabaseServices import AttachmentPoint\n        mirror = {\n            AttachmentPoint.TopLeft: AttachmentPoint.TopRight,\n            AttachmentPoint.MiddleLeft: AttachmentPoint.MiddleRight,\n            AttachmentPoint.BottomLeft: AttachmentPoint.BottomRight,\n            AttachmentPoint.BaseLeft: AttachmentPoint.BaseRight,\n            AttachmentPoint.TopRight: AttachmentPoint.TopLeft,\n            AttachmentPoint.MiddleRight: AttachmentPoint.MiddleLeft,\n            AttachmentPoint.BottomRight: AttachmentPoint.BottomLeft,\n            AttachmentPoint.BaseRight: AttachmentPoint.BaseLeft,\n        }\n        btr2f = tx.GetObject(br2.BlockTableRecord, OpenMode.ForRead)\n        defs = {}\n        for ent_id in btr2f:\n            ent = tx.GetObject(ent_id, OpenMode.ForRead)\n            if isinstance(ent, AttributeDefinition) and not ent.Constant:\n                defs[str(ent.Tag).upper()] = ent\n        for attr_oid in br2.AttributeCollection:\n            attr = tx.GetObject(attr_oid, OpenMode.ForWrite)\n            d = defs.get(str(attr.Tag).upper())\n            if d is not None:\n                attr.SetAttributeFromBlock(d, br2.BlockTransform)\n                m = mirror.get(attr.Justify)\n                if m is not None:\n                    anchor = attr.AlignmentPoint\n                    attr.Justify = m\n                    attr.AlignmentPoint = anchor\n                    attr.AdjustAlignment(db)\n            attr.TextString = \"т.Б\"\n        log()\n        dump_attrefs(tx, br2, \"clone2 AFTER flip + resync + justify swap\")\n\n        log()\n        log(\"=== DONE === (т.А=flip only at +5,+5; т.Б=full fix at +5,+10)\")\n        tx.Commit()\n    except SystemExit:\n        tx.Abort()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

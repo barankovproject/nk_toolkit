@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Create a TIN volume surface per corridor: base=existing ground, comp=corridor Top surface.\n\nFor each corridor:\n  1. Get the first configured CorridorSurface (has LinkCodes) -\u003e its SurfaceId.\n  2. Create TinVolumeSurface(name, ground_id, corr_surf_id).\n  3. Rebuild and read cut/fill/net volumes.\n  4. Leave the volume surface in the drawing.\n\nIdempotent: skips corridors that already have a volume surface named \u0027\u003ccanal\u003e - Volume\u0027.\n\"\"\"\nfrom __future__ import annotations\n\nimport clr\nimport csv\nimport datetime\nimport os\nimport sys\nimport traceback\nfrom typing import Any, Optional\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import OpenMode\nfrom Autodesk.Civil.ApplicationServices import CivilApplication\nfrom Autodesk.Civil.DatabaseServices import TinVolumeSurface\n\n_LIB_ROOT = r\"C:\\Arhyz\\automation\\scripts\"\nif _LIB_ROOT not in sys.path:\n    sys.path.insert(0, _LIB_ROOT)\n\nfrom civil.utils import safe_iter, safe_resolve  # noqa: E402\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\build_corridor_volumes\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nTIMESTAMP = datetime.datetime.now().strftime(\"%Y%m%d_%H%M%S\")\nLOG_FILE = os.path.join(LOG_DIR, f\"build_{TIMESTAMP}.log\")\nCSV_FILE = os.path.join(LOG_DIR, f\"volumes_{TIMESTAMP}.csv\")\n\nGROUND_SURFACE = \"Земля (новая)\"\nVOLUME_SUFFIX = \" - Volume\"\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef find_ground_surface_id(civil_db: Any, tx: Any) -\u003e Any:\n    for oid in civil_db.GetSurfaceIds():\n        try:\n            s = tx.GetObject(oid, OpenMode.ForRead)\n            if s.Name == GROUND_SURFACE:\n                return oid\n        except Exception:\n            pass\n    return None\n\n\ndef get_existing_volume_surface_names(civil_db: Any, tx: Any) -\u003e set:\n    names: set = set()\n    for oid in civil_db.GetSurfaceIds():\n        try:\n            s = tx.GetObject(oid, OpenMode.ForRead)\n            if s.IsVolumeSurface:\n                names.add(s.Name)\n        except Exception:\n            pass\n    return names\n\n\ndef get_corridor_surface_id(corr: Any) -\u003e Optional[Any]:\n    \"\"\"Return SurfaceId of the first CorridorSurface that has link codes.\"\"\"\n    try:\n        cs_col = corr.CorridorSurfaces\n        for cs in cs_col:\n            try:\n                if list(cs.LinkCodes()):\n                    return cs.SurfaceId\n            except Exception:\n                pass\n    except Exception:\n        pass\n    return None\n\n\ndef build_volume(name: str, ground_id: Any, corr_surf_id: Any, tx: Any) -\u003e tuple[Any, str]:\n    \"\"\"Create and rebuild a TIN volume surface. Returns (vol_id, status_str).\"\"\"\n    try:\n        vol_id = TinVolumeSurface.Create(name, ground_id, corr_surf_id)\n    except Exception as e:\n        return None, f\"FAIL Create: {type(e).__name__}: {e}\"\n\n    try:\n        vs = tx.GetObject(vol_id, OpenMode.ForWrite)\n        vs.Rebuild()\n    except Exception as e:\n        return vol_id, f\"PARTIAL: rebuild failed: {type(e).__name__}: {e}\"\n\n    try:\n        vp = vs.GetVolumeProperties()\n        cut = vp.AdjustedCutVolume\n        fill = vp.AdjustedFillVolume\n        net = vp.AdjustedNetVolume\n        return vol_id, f\"OK  cut={cut:.1f}  fill={fill:.1f}  net={net:.1f}\"\n    except Exception as e:\n        return vol_id, f\"PARTIAL: volumes unreadable: {type(e).__name__}: {e}\"\n\n\nlog(\"=== build_corridor_volumes ===\")\nlog(f\"started: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}\")\nlog(f\"ground: {GROUND_SURFACE!r}\\n\")\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\ncivil_db = CivilApplication.ActiveDocument\n\nrows: list[dict] = []\nresults: list[str] = []\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ground_id = find_ground_surface_id(civil_db, tx)\n        log(f\"Ground surface id: {ground_id}\")\n        if ground_id is None:\n            log(f\"ERROR: \u0027{GROUND_SURFACE}\u0027 not found\")\n        else:\n            existing_vol_names = get_existing_volume_surface_names(civil_db, tx)\n            log(f\"Existing volume surfaces: {len(existing_vol_names)}\")\n            log(f\"Corridors: {civil_db.CorridorCollection.Count}\\n\")\n\n            for raw in safe_iter(civil_db.CorridorCollection):\n                corr = safe_resolve(raw, tx)\n                if corr is None:\n                    continue\n                name = corr.Name\n                vol_name = name + VOLUME_SUFFIX\n\n                if vol_name in existing_vol_names:\n                    status = \"SKIP (volume surface exists)\"\n                    line = f\"  {name:30s} {status}\"\n                    log(line)\n                    results.append(line)\n                    continue\n\n                corr_surf_id = get_corridor_surface_id(corr)\n                if corr_surf_id is None:\n                    status = \"SKIP (no configured corridor surface)\"\n                    line = f\"  {name:30s} {status}\"\n                    log(line)\n                    results.append(line)\n                    continue\n\n                try:\n                    _, status = build_volume(vol_name, ground_id, corr_surf_id, tx)\n                except Exception as e:\n                    status = f\"FAIL: {type(e).__name__}: {e}\"\n                    log(traceback.format_exc())\n\n                line = f\"  {name:30s} {status}\"\n                log(line)\n                results.append(line)\n\n                if status.startswith(\"OK\"):\n                    parts = status.split()\n                    rows.append({\n                        \"canal\": name,\n                        \"cut_m3\": parts[1].split(\"=\")[1],\n                        \"fill_m3\": parts[2].split(\"=\")[1],\n                        \"net_m3\": parts[3].split(\"=\")[1],\n                    })\n\n        ok = sum(1 for r in results if \"OK\" in r)\n        skip = sum(1 for r in results if \"SKIP\" in r)\n        fail = len(results) - ok - skip\n        log(f\"\\n--- {ok} OK, {skip} skipped, {fail} failed ---\")\n\n        tx.Commit()\n        log(\"transaction committed\")\n    except Exception as e:\n        log(f\"\\nERROR: {e}\\n{traceback.format_exc()}\")\n        try:\n            tx.Abort()\n        except Exception:\n            pass\n    finally:\n        try:\n            tx.Dispose()\n        except Exception:\n            pass\nfinally:\n    try:\n        lock.Dispose()\n    except Exception:\n        pass\n\n# Write CSV\nif rows:\n    with open(CSV_FILE, \"w\", newline=\"\", encoding=\"utf-8\") as f:\n        writer = csv.DictWriter(f, fieldnames=[\"canal\", \"cut_m3\", \"fill_m3\", \"net_m3\"])\n        writer.writeheader()\n        writer.writerows(rows)\n    log(f\"\\nCSV: {CSV_FILE}\")\n\nlog(\"=== DONE ===\")\nOUT = \"\\n\".join(results)\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

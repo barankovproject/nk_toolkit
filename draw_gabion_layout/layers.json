@@ -1,0 +1,12 @@
+{
+  "filter": {
+    "name": "Gabion Layout",
+    "expr": "NAME == \"inf_gl_*\""
+  },
+  "layers": {
+    "inf_gl_outline":   { "color": 86,            "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_gl_hatch":     { "color": [144, 238, 144], "lineweight": "default", "linetype": "Continuous" },
+    "inf_gl_gabion_3d": { "color": 3,             "lineweight": 0.5,       "linetype": "Continuous" },
+    "inf_gl_anno":      { "color": 7,             "lineweight": "default", "linetype": "Continuous" }
+  }
+}

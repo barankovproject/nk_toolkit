@@ -1,0 +1,9 @@
+{
+  "filter": {
+    "name": "Anchor Axis",
+    "expr": "NAME == \"inf_md_anchor_axis\""
+  },
+  "layers": {
+    "inf_md_anchor_axis": { "color": 3, "lineweight": 0.7, "linetype": "Continuous" }
+  }
+}

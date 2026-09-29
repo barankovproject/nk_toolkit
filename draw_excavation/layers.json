@@ -1,0 +1,14 @@
+{
+  "filter": {
+    "name": "Excavation",
+    "expr": "NAME == \"inf_exc_*\""
+  },
+  "layers": {
+    "inf_exc_top":        { "color": 7, "lineweight": 0.5, "linetype": "Continuous" },
+    "inf_exc_bottom":     { "color": 7, "lineweight": 0.5, "linetype": "Continuous" },
+    "inf_exc_division":   { "color": 8, "lineweight": "default", "linetype": "Continuous" },
+    "inf_exc_slope":      { "color": 8, "lineweight": "default", "linetype": "Continuous" },
+    "inf_exc_centerline": { "color": 1, "lineweight": "default", "linetype": "Continuous" },
+    "inf_exc_anno":       { "color": 7, "lineweight": "default", "linetype": "Continuous" }
+  }
+}

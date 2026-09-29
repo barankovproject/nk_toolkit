@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump the point-number block(s) so we learn the real block name, attribute tags\nand whether it is dynamic, before writing ditch_07_draw_point_blocks.\n\nLooks for block definitions whose name contains \u0027точк\u0027 / \u0027point\u0027 (covers both\n\u0027Номер_точки_канавы\u0027 and \u0027point_number\u0027), lists every AttributeDefinition tag in\nthe block table record, and counts model-space references of each.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport clr, datetime, math, os, traceback\nfrom typing import Any\n\nclr.AddReference(\"AecBaseMgd\")\nclr.AddReference(\"AeccDbMgd\")\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    AttributeDefinition,\n    AttributeReference,\n    BlockReference,\n    BlockTableRecord,\n    OpenMode,\n    SymbolUtilityServices,\n)\n\nBASE = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_point_block\"\nos.makedirs(os.path.join(BASE, \"logs\"), exist_ok=True)\nLOG = os.path.join(BASE, \"logs\", f\"dump_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\")\n\n\ndef log(m: Any = \"\") -\u003e None:\n    with open(LOG, \"a\", encoding=\"utf-8\") as f:\n        f.write(str(m) + \"\\n\")\n\n\ndef eff_name(br: Any, tx: Any) -\u003e str:\n    try:\n        if br.IsDynamicBlock:\n            return tx.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead).Name\n    except Exception:\n        pass\n    return tx.GetObject(br.BlockTableRecord, OpenMode.ForRead).Name\n\n\ndef main(tx: Any, db: Any) -\u003e None:\n    bt = tx.GetObject(db.BlockTableId, OpenMode.ForRead)\n    log(\"=== block definitions matching \u0027точк\u0027 / \u0027point\u0027 ===\")\n    matched: list[str] = []\n    for btr_id in bt:\n        btr = tx.GetObject(btr_id, OpenMode.ForRead)\n        if not isinstance(btr, BlockTableRecord):\n            continue\n        name = btr.Name\n        low = name.lower()\n        if (\"точк\" not in low) and (\"point\" not in low):\n            continue\n        matched.append(name)\n        log(f\"\\nBLOCK \u0027{name}\u0027\")\n        log(f\"  HasAttributeDefinitions = {btr.HasAttributeDefinitions}\")\n        log(f\"  IsDynamicBlock = {btr.IsDynamicBlock}  IsAnonymous = {btr.IsAnonymous}\")\n        for ent_id in btr:\n            ent = tx.GetObject(ent_id, OpenMode.ForRead)\n            if isinstance(ent, AttributeDefinition):\n                log(\n                    f\"    ATTDEF tag=\u0027{ent.Tag}\u0027 prompt=\u0027{ent.Prompt}\u0027 \"\n                    f\"default=\u0027{ent.TextString}\u0027 const={ent.Constant}\"\n                )\n            else:\n                log(f\"    {ent.GetType().Name}\")\n\n    if not matched:\n        log(\"  (no matching block definition found)\")\n\n    # Count model-space references, list attribute tags+values on the first of each\n    ms = tx.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead)\n    counts: dict[str, int] = {}\n    sample_done: set[str] = set()\n    for oid in ms:\n        o = tx.GetObject(oid, OpenMode.ForRead)\n        if not isinstance(o, BlockReference):\n            continue\n        nm = eff_name(o, tx)\n        low = nm.lower()\n        if (\"точк\" not in low) and (\"point\" not in low):\n            continue\n        counts[nm] = counts.get(nm, 0) + 1\n        if nm not in sample_done:\n            sample_done.add(nm)\n            ins = o.Position\n            log(f\"\\nFIRST REF of \u0027{nm}\u0027 at ({ins.X:.3f}, {ins.Y:.3f}) layer=\u0027{o.Layer}\u0027\")\n            log(f\"  rotation_deg={math.degrees(o.Rotation):.2f} scale={o.ScaleFactors.X:.3f}\")\n            try:\n                for attr_oid in o.AttributeCollection:\n                    a = tx.GetObject(attr_oid, OpenMode.ForRead)\n                    if isinstance(a, AttributeReference):\n                        log(f\"    ATTREF tag=\u0027{a.Tag}\u0027 text=\u0027{a.TextString}\u0027\")\n            except Exception as e:\n                log(f\"  attr read error: {e}\")\n            try:\n                for p in o.DynamicBlockReferencePropertyCollection:\n                    log(f\"    dyn \u0027{p.PropertyName}\u0027 = {p.Value} (readonly={p.ReadOnly})\")\n            except Exception:\n                pass\n\n    log(\"\\n=== model-space reference counts ===\")\n    for nm, c in counts.items():\n        log(f\"  \u0027{nm}\u0027: {c}\")\n    if not counts:\n        log(\"  (no matching references in model space)\")\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        log(\"=== DUMP POINT BLOCK ===\")\n        main(tx, db)\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

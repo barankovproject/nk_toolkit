@@ -1,0 +1,9 @@
+{
+  "filter": {
+    "name": "Ditch Point Blocks",
+    "expr": "NAME == \"inf_md_point\""
+  },
+  "layers": {
+    "inf_md_point": { "color": 30, "lineweight": 0.5, "linetype": "Continuous" }
+  }
+}

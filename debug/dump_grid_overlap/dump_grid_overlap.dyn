@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_assembly",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Compact dump: grid perps, circles, and the NEWEST user-drawn polylines.\"\"\"\n\nfrom __future__ import annotations\n\nimport clr\nimport datetime\nimport os\nimport traceback\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.DatabaseServices import Circle, OpenMode, Polyline\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_grid_overlap\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_grid_overlap_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\nANCHOR_LAYERS = {\n    \"inf_md_anchor\",\n    \"inf_md_anchor_axis\",\n    \"inf_md_anchor_grid\",\n    \"inf_md_anchor_div\",\n    \"inf_md_anchor_pts\",\n}\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef hx(h) -\u003e int:\n    try:\n        return int(h.ToString(), 16)\n    except Exception:\n        return 0\n\n\ndef ends(pl):\n    n = int(pl.NumberOfVertices)\n    a = pl.GetPoint2dAt(0)\n    b = pl.GetPoint2dAt(n - 1)\n    return (a.X, a.Y), (b.X, b.Y)\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(db.CurrentSpaceId, OpenMode.ForRead)\n        grid_pls = []\n        circles = []\n        other_pls = []  # (handle_int, ent)\n        for oid in ms:\n            ent = tx.GetObject(oid, OpenMode.ForRead)\n            if isinstance(ent, Polyline):\n                if ent.Layer == \"inf_md_anchor_grid\":\n                    grid_pls.append(ent)\n                elif ent.Layer not in ANCHOR_LAYERS:\n                    other_pls.append((hx(ent.Handle), ent))\n            elif isinstance(ent, Circle):\n                circles.append(ent)\n\n        log(f\"=== grid perpendiculars (inf_md_anchor_grid): {len(grid_pls)} ===\")\n        for pl in sorted(grid_pls, key=lambda p: hx(p.Handle)):\n            (ax, ay), (bx, by) = ends(pl)\n            ang = __import__(\"math\").degrees(__import__(\"math\").atan2(by - ay, bx - ax))\n            log(\n                f\"  h={pl.Handle.ToString()} color={pl.Color.ColorIndex} \"\n                f\"len={pl.Length:.2f} ang={ang:6.1f}  \"\n                f\"({ax:.1f},{ay:.1f})-\u003e({bx:.1f},{by:.1f})\"\n            )\n\n        log(f\"\\n=== circles total: {len(circles)} ===\")\n        by_layer = {}\n        for c in circles:\n            by_layer[c.Layer] = by_layer.get(c.Layer, 0) + 1\n        for lyr, n in sorted(by_layer.items(), key=lambda kv: -kv[1]):\n            log(f\"  {lyr:28s} {n}\")\n\n        log(\"\\n=== inf_md_anchor_grid polylines with \u003e2 verts (hand-drawn piece) ===\")\n        for pl in sorted(grid_pls, key=lambda p: hx(p.Handle)):\n            n = int(pl.NumberOfVertices)\n            if n \u003e 2:\n                pts = [(pl.GetPoint2dAt(i).X, pl.GetPoint2dAt(i).Y) for i in range(n)]\n                log(\n                    f\"  h={pl.Handle.ToString()} color={pl.Color.ColorIndex} \"\n                    f\"verts={n} len={pl.Length:.2f} closed={pl.Closed}\"\n                )\n                for p in pts:\n                    log(f\"     ({p[0]:.2f}, {p[1]:.2f})\")\n\n        log(\"\\n=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "e5f6a7b8c9d01234efab567890123458",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "a1b2c3d4e5f678904abcdef123456781",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}

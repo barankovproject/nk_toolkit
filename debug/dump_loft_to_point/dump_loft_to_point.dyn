@@ -1,0 +1,118 @@
+﻿{
+    "Uuid":  "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "IsCustomNode":  false,
+    "Description":  "",
+    "Name":  "dump_loft_to_point",
+    "ElementResolver":  {
+                            "ResolutionMap":  {
+
+                                              }
+                        },
+    "Inputs":  [
+
+               ],
+    "Outputs":  [
+
+                ],
+    "Nodes":  [
+                  {
+                      "ConcreteType":  "PythonNodeModels.PythonNode, PythonNodeModels",
+                      "Code":  "\"\"\"Dump: does Solid3d.CreateLoftedSolid accept a degenerate point cross-section?\n\nTests whether lofting a closed Region down to a single point (DBPoint, then a\nzero/near-zero-radius Circle as fallbacks) produces a valid tapering wedge\nSolid3d -- needed for the sharp-PI fan-wedge fix in\nbuild_gsi_kv_trapezoid_faceted (each facet piece would loft its own full outer\nsection down to one shared apex point instead of a hybrid/self-intersecting\n9-point section).\n\"\"\"\n\nfrom __future__ import annotations\n\nimport datetime\nimport os\nimport traceback\n\nimport clr\n\nclr.AddReference(\"acmgd\")\nclr.AddReference(\"acdbmgd\")\n\nfrom Autodesk.AutoCAD.DatabaseServices import (\n    Circle,\n    DBObjectCollection,\n    DBPoint,\n    Line,\n    LoftOptions,\n    OpenMode,\n    Region,\n    Solid3d,\n    SymbolUtilityServices,\n)\nfrom Autodesk.AutoCAD.ApplicationServices import Application\nfrom Autodesk.AutoCAD.Geometry import Point3d, Vector3d\n\nLOG_DIR = r\"C:\\Arhyz\\automation\\scripts\\debug\\dump_loft_to_point\\logs\"\nos.makedirs(LOG_DIR, exist_ok=True)\nLOG_FILE = os.path.join(\n    LOG_DIR, f\"dump_loft_to_point_{datetime.datetime.now():%Y%m%d_%H%M%S}.log\"\n)\n\n\ndef log(msg: str = \"\") -\u003e None:\n    with open(LOG_FILE, \"a\", encoding=\"utf-8\") as f:\n        f.write(msg + \"\\n\")\n\n\ndef make_square_region(ms, tx, cx, cy, cz, half=1.0):\n    pts = [\n        Point3d(cx - half, cy - half, cz),\n        Point3d(cx + half, cy - half, cz),\n        Point3d(cx + half, cy + half, cz),\n        Point3d(cx - half, cy + half, cz),\n    ]\n    lines = []\n    for i in range(4):\n        ln = Line(pts[i], pts[(i + 1) % 4])\n        ms.AppendEntity(ln)\n        tx.AddNewlyCreatedDBObject(ln, True)\n        lines.append(ln)\n    col = DBObjectCollection()\n    for ln in lines:\n        col.Add(ln)\n    region_col = Region.CreateFromCurves(col)\n    region = region_col[0]\n    ms.AppendEntity(region)\n    tx.AddNewlyCreatedDBObject(region, True)\n    for ln in lines:\n        ln.Erase()\n    return region\n\n\ndef try_loft(label, ms, tx, region, apex_entity, already_added=False):\n    log(f\"--- attempt: {label} ---\")\n    try:\n        if not already_added:\n            ms.AppendEntity(apex_entity)\n            tx.AddNewlyCreatedDBObject(apex_entity, True)\n        opts = LoftOptions()\n        solid = Solid3d()\n        solid.CreateLoftedSolid([region, apex_entity], [], None, opts)\n        vol = None\n        try:\n            vol = float(solid.MassProperties.Volume)\n        except Exception as ve:\n            log(f\"  MassProperties.Volume failed: {ve}\")\n        ms.AppendEntity(solid)\n        tx.AddNewlyCreatedDBObject(solid, True)\n        log(f\"  SUCCESS: solid created, volume={vol}\")\n        return True\n    except Exception as e:\n        log(f\"  FAILED: {type(e).__name__}: {e}\")\n        log(traceback.format_exc())\n        return False\n\n\ndoc = Application.DocumentManager.MdiActiveDocument\ndb = doc.Database\nlog(f\"=== dump_loft_to_point {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ===\")\n\nlock = doc.LockDocument()\ntry:\n    tx = db.TransactionManager.StartTransaction()\n    try:\n        ms = tx.GetObject(\n            SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite\n        )\n\n        base_x, base_y, base_z = 0.0, 0.0, 0.0\n        apex_z = 3.0  # separate the two profiles along Z, NOT laterally in their own\n        # plane -- two coplanar regions offset sideways in the same Z is a degenerate\n        # loft (no transverse separation), which is what silently broke every earlier\n        # attempt including plain region-to-region (2026-09-07 dump bug, not a real\n        # CreateLoftedSolid limitation).\n\n        region1 = make_square_region(ms, tx, base_x, base_y, base_z, half=1.0)\n        pt_ent = DBPoint()\n        pt_ent.Position = Point3d(base_x, base_y, apex_z)\n        ok1 = try_loft(\"DBPoint straight above\", ms, tx, region1, pt_ent)\n\n        region2 = make_square_region(ms, tx, base_x, base_y + 5.0, base_z, half=1.0)\n        circ_ent = Circle(Point3d(base_x, base_y + 5.0, apex_z), Vector3d.ZAxis, 0.0)\n        ok2 = try_loft(\"zero-radius Circle\", ms, tx, region2, circ_ent)\n\n        region3 = make_square_region(ms, tx, base_x, base_y + 10.0, base_z, half=1.0)\n        circ_ent2 = Circle(\n            Point3d(base_x, base_y + 10.0, apex_z), Vector3d.ZAxis, 0.001\n        )\n        ok3 = try_loft(\"tiny-radius (0.001) Circle\", ms, tx, region3, circ_ent2)\n\n        region4 = make_square_region(ms, tx, base_x, base_y + 15.0, base_z, half=1.0)\n        tiny_region = make_square_region(\n            ms, tx, base_x, base_y + 15.0, apex_z, half=0.01\n        )\n        ok4 = try_loft(\n            \"tiny (half=0.01) square Region\",\n            ms,\n            tx,\n            region4,\n            tiny_region,\n            already_added=True,\n        )\n\n        region5 = make_square_region(ms, tx, base_x, base_y + 20.0, base_z, half=1.0)\n        ok5 = try_loft(\n            \"plain region-to-region sanity check (half=1.0 to half=1.0, no taper)\",\n            ms,\n            tx,\n            region5,\n            make_square_region(ms, tx, base_x, base_y + 20.0, apex_z, half=1.0),\n            already_added=True,\n        )\n\n        log(\"\")\n        log(\n            f\"summary: DBPoint={ok1} zero-radius-Circle={ok2} \"\n            f\"tiny-radius-Circle={ok3} tiny-region={ok4} plain-sanity={ok5}\"\n        )\n        log(\"=== DONE ===\")\n        tx.Commit()\n    except Exception as e:\n        log(f\"ERROR: {e}\")\n        log(traceback.format_exc())\n        tx.Abort()\n    finally:\n        tx.Dispose()\nfinally:\n    lock.Dispose()\n\nOUT = LOG_FILE\n",
+                      "Engine":  "CPython3",
+                      "EngineName":  "CPython3",
+                      "VariableInputPorts":  true,
+                      "Id":  "b2c3d4e5f6a789014bcdef1234567892",
+                      "NodeType":  "PythonScriptNode",
+                      "Inputs":  [
+
+                                 ],
+                      "Outputs":  [
+                                      {
+                                          "Id":  "f6a7b8c9d0e12345fabc678901234569",
+                                          "Name":  "OUT",
+                                          "Description":  "Python script result",
+                                          "UsingDefaultValue":  false,
+                                          "Level":  2,
+                                          "UseLevels":  false,
+                                          "KeepListStructure":  false
+                                      }
+                                  ],
+                      "Replication":  "Disabled",
+                      "Description":  "Python Script"
+                  }
+              ],
+    "Connectors":  [
+
+                   ],
+    "Dependencies":  [
+
+                     ],
+    "NodeLibraryDependencies":  [
+
+                                ],
+    "Thumbnail":  "",
+    "GraphDocumentationURL":  null,
+    "ExtensionWorkspaceData":  [
+                                   {
+                                       "ExtensionGuid":  "28992e1d-abb9-417f-8b1b-05e053bee670",
+                                       "Name":  "Properties",
+                                       "Version":  "2.18",
+                                       "Data":  {
+
+                                                }
+                                   }
+                               ],
+    "Author":  "",
+    "Linting":  {
+                    "activeLinter":  "None",
+                    "activeLinterId":  "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+                    "warningCount":  0,
+                    "errorCount":  0
+                },
+    "Bindings":  [
+
+                 ],
+    "View":  {
+                 "Dynamo":  {
+                                "ScaleFactor":  1.0,
+                                "HasRunWithoutCrash":  false,
+                                "IsVisibleInDynamoLibrary":  true,
+                                "Version":  "2.18.1.5096",
+                                "RunType":  "Manual",
+                                "RunPeriod":  "1000"
+                            },
+                 "Camera":  {
+                                "Name":  "Background Preview",
+                                "EyeX":  0.0,
+                                "EyeY":  0.0,
+                                "EyeZ":  100.0,
+                                "LookX":  0.0,
+                                "LookY":  0.0,
+                                "LookZ":  -1.0,
+                                "UpX":  0.0,
+                                "UpY":  1.0,
+                                "UpZ":  0.0
+                            },
+                 "ConnectorPins":  [
+
+                                   ],
+                 "NodeViews":  [
+                                   {
+                                       "Id":  "b2c3d4e5f6a789014bcdef1234567892",
+                                       "Name":  "Python Script",
+                                       "IsSetAsInput":  false,
+                                       "IsSetAsOutput":  false,
+                                       "Excluded":  false,
+                                       "ShowGeometry":  true,
+                                       "X":  0.0,
+                                       "Y":  0.0
+                                   }
+                               ],
+                 "Annotations":  [
+
+                                 ],
+                 "X":  0.0,
+                 "Y":  0.0,
+                 "Zoom":  1.0
+             }
+}
