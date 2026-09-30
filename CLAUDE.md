@@ -17,6 +17,7 @@ project-agnostic repo, `tube_toolkit` — not here.
 - New Civil 3D API method needed → check `common/docs/platform/api_dump/` first
 - Drawing script (draws layers/entities) → layers defined in `layers.json` in the script folder, grouped under a filter → [common/docs/process/07_drawing_scripts.md](common/docs/process/07_drawing_scripts.md)
 - New script → `README.md` in its folder (Russian); input/output changed later → update it in the same commit → [common/docs/process/02_development.md](common/docs/process/02_development.md#script-readme)
+- Commit each adequately-scoped change as it's finished (don't let unrelated work pile up into one giant commit) → [common/docs/process/02_development.md](common/docs/process/02_development.md#commit-each-adequately-scoped-change)
 
 ## Script naming
 
