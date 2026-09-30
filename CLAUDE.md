@@ -57,7 +57,7 @@ Never use `Set-Content` / `Out-File` / `Add-Content` for non-ASCII. Always use .
 Repair snippet for already-corrupted files → [common/docs/process/02_development.md](common/docs/process/02_development.md)
 
 ## Debug scripts
-Each debug script in its own subfolder: `debug/<name>/` with `logs/` inside.
+Each debug script in its own subfolder: `scripts/debug/<name>/` with `logs/` inside.
 Always write output to a log file, never only to `OUT`.
 Structure and log pattern → [common/docs/process/01_api_exploration.md](common/docs/process/01_api_exploration.md)
 
@@ -67,7 +67,7 @@ Ambiguous requirement → ask, don't scan. Do not read files or open pictures as
 ## Launcher inject workflow
 Never edit `.dyn` directly. Edit `launcher.py` → run `inject.ps1` immediately.
 ```powershell
-.\common\helpers\inject.ps1 <name>\launcher.py <name>\<name>.dyn
+.\common\helpers\inject.ps1 scripts\<name>\launcher.py scripts\<name>\<name>.dyn
 ```
 Full workflow and launcher pattern → [common/docs/process/02_development.md](common/docs/process/02_development.md)
 
@@ -81,8 +81,9 @@ What goes where → [docs/process/05_maintenance.md](docs/process/05_maintenance
 - Full rules and example → [common/docs/process/02_development.md](common/docs/process/02_development.md)
 
 ## Code organisation
-Logic in a Python package at this repo's own root (`build_canal_model/`, `ditch/`,
-`anchor/`, etc.), not in the `.dyn` node. Launcher is a thin entry point.
+Logic in a Python package under `scripts/` (`scripts/build_canal_model/`,
+`scripts/ditch/`, `scripts/anchor/`, etc.), not in the `.dyn` node. Launcher is a
+thin entry point.
 Package structure, hot-reload pattern → [common/docs/process/02_development.md](common/docs/process/02_development.md)
 
 ## Reference documents

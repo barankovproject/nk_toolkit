@@ -19,19 +19,24 @@ API, конфиг линтера, хелперы inject/run, а также об�
 ```
 nk_toolkit/
 ├── common/                    ← submodule → civil3d_common
-├── build_canal_model/         ← основной строитель канав (гейбоны/лотки/рёбра)
-├── build_corridors/ build_corridor_surfaces/ build_corridor_volumes/
-├── build_gsi_grid/
-├── build_widening_assemblies/
-├── ditch/                     ← продольные/поперечные канавы у дороги
-├── anchor/                    ← анкерная сетка на откосах
-├── draw_*/                    ← 2D/3D аннотации (план, габионы, экскавация)
-├── report_*/                  ← отчёты по объёмам
-├── help_*/                    ← утилиты
-├── debug/                     ← одноразовые дебаг-дампы
+├── scripts/
+│   ├── build_canal_model/     ← основной строитель канав (гейбоны/лотки/рёбра)
+│   ├── build_corridors/ build_corridor_surfaces/ build_corridor_volumes/
+│   ├── build_gsi_grid/ build_widening_assemblies/
+│   ├── ditch/                 ← продольные/поперечные канавы у дороги
+│   ├── anchor/                ← анкерная сетка на откосах
+│   ├── draw_*/                ← 2D/3D аннотации (план, габионы, экскавация)
+│   ├── report_*/               ← отчёты по объёмам
+│   ├── help_*/                 ← утилиты
+│   ├── debug/                  ← одноразовые дебаг-дампы
+│   └── paths.py                ← свой реестр путей (CANALS_DIR, TYPES_FILE, ...)
 ├── docs/                      ← project-specific доки (context.md, testing, roadmap)
 ├── projects/arhyz_s2/references/  ← справочники конкретно по объекту Архыз
-└── paths.py                   ← свой реестр путей (CANALS_DIR, TYPES_FILE, ...)
+├── tests/                     ← pytest
+├── tools/
+├── CLAUDE.md
+├── README.md
+└── ruff.toml                  ← extend = "common/ruff.toml"
 ```
 
 ## Происхождение

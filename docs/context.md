@@ -69,6 +69,6 @@ the sibling `tube_toolkit` repository, a separate, project-agnostic toolkit. Thi
 
 - Autodesk Civil 3D 2024 + Dynamo (CPython 3.x engine)
 - Civil 3D objects: `AeccDbMgd`, `AecBaseMgd`, `acdbmgd`, `acmgd`
-- Business logic: plain Python packages at this repo's own root (`build_canal_model/`,
-  `ditch/`, `anchor/`, etc.) plus `civil3d_common` (submodule at `common/`)
+- Business logic: plain Python packages under `scripts/` (`scripts/build_canal_model/`,
+  `scripts/ditch/`, `scripts/anchor/`, etc.) plus `civil3d_common` (submodule at `common/`)
 - Entry point per script: thin `launcher.py` injected into `.dyn` node
