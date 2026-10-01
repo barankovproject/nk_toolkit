@@ -39,7 +39,7 @@ from .layers import (
     region_layer_name,
     wedge_layer_name,
 )
-from .layout import (
+from gsi_wall_layout import (
     Pt,
     _best_offset,
     _ccw,

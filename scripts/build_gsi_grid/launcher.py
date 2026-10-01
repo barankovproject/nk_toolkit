@@ -26,7 +26,7 @@ for _p in (_ROOT, _COMMON):
 for _name in [
     m
     for m in list(sys.modules)
-    if m.startswith("build_gsi_grid") or m.startswith("civil")
+    if m.startswith("build_gsi_grid") or m.startswith("civil") or m == "gsi_wall_layout"
 ]:
     del sys.modules[_name]
 
