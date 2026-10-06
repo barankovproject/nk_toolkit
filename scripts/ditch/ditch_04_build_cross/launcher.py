@@ -21,8 +21,12 @@ _ROOT = os.path.join(_REPO_ROOT, "scripts")
 _COMMON = os.path.join(_REPO_ROOT, "common")
 _DITCH = os.path.join(_ROOT, "ditch")
 for _p in (_DITCH, _ROOT, _COMMON):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+# both toolkits have a top-level paths.py: never reuse the copy cached by the OTHER toolkit's
+# scripts earlier in this Dynamo session (own dirs are moved to the front just above)
+sys.modules.pop("paths", None)
 # Drop both this package and ditch_core (the imported geometry) from
 # sys.modules so the next import reloads every submodule fresh in dependency
 # order. importlib.reload() in name order rebinds `from .x import y` against stale

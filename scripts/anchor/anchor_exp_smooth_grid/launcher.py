@@ -21,8 +21,12 @@ _ROOT = os.path.join(_REPO_ROOT, "scripts")
 _COMMON = os.path.join(_REPO_ROOT, "common")
 _ANCHOR = os.path.join(_ROOT, "anchor")
 for _p in (_ANCHOR, _ROOT, _COMMON):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+# both toolkits have a top-level paths.py: never reuse the copy cached by the OTHER toolkit's
+# scripts earlier in this Dynamo session (own dirs are moved to the front just above)
+sys.modules.pop("paths", None)
 # Drop every anchor_* module so the next import reloads them fresh.
 for _name in [m for m in list(sys.modules) if m.startswith("anchor_")]:
     del sys.modules[_name]

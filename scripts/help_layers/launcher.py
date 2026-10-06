@@ -18,8 +18,12 @@ except NameError:
 _ROOT = os.path.join(_REPO_ROOT, "scripts")
 _COMMON = os.path.join(_REPO_ROOT, "common")
 for _p in (_ROOT, _COMMON):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+# both toolkits have a top-level paths.py: never reuse the copy cached by the OTHER toolkit's
+# scripts earlier in this Dynamo session (own dirs are moved to the front just above)
+sys.modules.pop("paths", None)
 for _name in sorted(
     [m for m in sys.modules if m.startswith("help_layers")], reverse=True
 ):
