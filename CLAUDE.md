@@ -71,6 +71,8 @@ Never edit `.dyn` directly. Edit `launcher.py` → run `inject.ps1` immediately.
 ```
 Full workflow and launcher pattern → [common/docs/process/02_development.md](common/docs/process/02_development.md)
 
+**A graph that fails BEFORE its first log line is a launcher problem, not a script bug** (`ModuleNotFoundError: No module named 'importlib'`, `cannot import name ... from 'paths'`): the `.dyn` embeds a stale launcher, the tab was opened before the injection, or the other toolkit's `paths` won the import. Run `python common/helpers/reinject_stale_dyn.py <repo> dry` (then without `dry`), close the Dynamo tab WITHOUT saving and reopen the graph -> [common/docs/platform/01_civil3d_errors.md](common/docs/platform/01_civil3d_errors.md) #43. After editing any launcher re-inject it (`... <repo> force`).
+
 ## Document errors and solutions
 Non-obvious bug fixed → add to `common/docs/platform/01_civil3d_errors.md` with error message, root cause, and fix.
 What goes where → [docs/process/05_maintenance.md](docs/process/05_maintenance.md)
