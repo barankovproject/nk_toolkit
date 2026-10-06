@@ -1,4 +1,4 @@
-import clr, importlib, os, sys
+import clr, os, sys
 
 clr.AddReference("AecBaseMgd")
 clr.AddReference("AeccDbMgd")
@@ -6,32 +6,38 @@ clr.AddReference("acmgd")
 clr.AddReference("acdbmgd")
 
 try:
-    _LIB_ROOT = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
+    _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+    while (
+        not os.path.isdir(os.path.join(_REPO_ROOT, "common"))
+        and os.path.dirname(_REPO_ROOT) != _REPO_ROOT
+    ):
+        _REPO_ROOT = os.path.dirname(_REPO_ROOT)
 except NameError:
-    _LIB_ROOT = os.environ.get("ARHYZ_LIB_ROOT", r"C:\Arhyz\automation\scripts\ditch")
+    # Inside the Dynamo .dyn node __file__ is undefined -> ONE shared project anchor;
+    # every root below is derived relative to it, identical for every nk_toolkit script.
+    _REPO_ROOT = os.environ.get("NK_TOOLKIT_ROOT", r"C:\nk_toolkit")
 
-_AUTOMATION_ROOT = os.path.dirname(_LIB_ROOT)
-
-if _LIB_ROOT not in sys.path:
-    sys.path.insert(0, _LIB_ROOT)
-if _AUTOMATION_ROOT not in sys.path:
-    sys.path.insert(0, _AUTOMATION_ROOT)
-
-# Drop the whole package so the next import reloads every submodule fresh in
-# dependency order (see launcher.py for the why).
+_ROOT = os.path.join(_REPO_ROOT, "scripts")
+_COMMON = os.path.join(_REPO_ROOT, "common")
+_DITCH = os.path.join(_ROOT, "ditch")
+for _p in (_DITCH, _ROOT, _COMMON):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+# both toolkits have a top-level paths.py: never reuse the copy cached by the OTHER toolkit's
+# scripts earlier in this Dynamo session (own dirs are moved to the front just above)
+sys.modules.pop("paths", None)
+# Drop the whole package from sys.modules so the next import reloads every
+# submodule fresh in dependency order. importlib.reload() in name order rebinds
+# `from .x import y` against stale modules when a dependant reloads before its
+# dependency (e.g. ditch_solver before cross_profile) — deleting avoids that.
 for _name in [m for m in list(sys.modules) if m.startswith("ditch_core")]:
     del sys.modules[_name]
 for _name in sorted(
     [m for m in sys.modules if m.startswith("civil")],
     reverse=True,
 ):
-    try:
-        importlib.reload(sys.modules[_name])
-    except Exception:
-        pass
-
+    del sys.modules[_name]
 from ditch_core.builder import CrossDitchBuilder
 
 # Flip script: IN[0] is the ditch picked by a Dynamo ObjectSelection node.
