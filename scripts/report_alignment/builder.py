@@ -4,7 +4,6 @@ import json
 import math
 import os
 import traceback
-import unicodedata
 
 from Autodesk.AutoCAD.ApplicationServices import Application
 from Autodesk.AutoCAD.DatabaseServices import OpenMode
@@ -17,8 +16,24 @@ _LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 _LOG_PREFIX = "alignment_report"
 
 
+def _nfkc_lite(s: str) -> str:
+    """The part of NFKC normalisation that matters for names typed in Civil 3D: no-break / ideographic spaces
+    become a plain space, full-width ASCII (U+FF01..FF5E) becomes ASCII. (`unicodedata` is missing in
+    Dynamo's CPython3.)"""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in (" ", " ", " ", "　"):
+            out.append(" ")
+        elif 0xFF01 <= o <= 0xFF5E:
+            out.append(chr(o - 0xFEE0))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _norm(s: str) -> str:
-    return unicodedata.normalize("NFKC", s).strip()
+    return _nfkc_lite(s).strip()
 
 
 def _trim_logs(log_dir, prefix, keep=10):
