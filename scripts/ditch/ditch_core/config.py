@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass(frozen=True)
 class CrossDitchParams:
     """Tunable parameters for cross-ditch placement.
 
@@ -33,6 +31,14 @@ class CrossDitchParams:
                      along-alignment projection stays within one `step`
                      (neighbouring ditches must not overlap in plan).
     """
+
+    # plain class instead of a frozen @dataclass: Dynamo's CPython3 has no `dataclasses` module;
+    # keyword overrides (CrossDitchParams(step=10.0)) keep working
+    def __init__(self, **overrides: object) -> None:
+        for _k, _v in overrides.items():
+            if not hasattr(type(self), _k):
+                raise TypeError(f"unknown parameter '{_k}'")
+            setattr(self, _k, _v)
 
     alignment_name: str = ""
     surface_name: str = ""

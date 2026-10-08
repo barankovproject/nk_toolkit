@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
 class AnchorParams:
     """Tunable parameters for the whole anchor script set (anchor_01..04).
 
@@ -36,6 +34,14 @@ class AnchorParams:
     Layers: names every script reads/draws on (kept here so cross-script
     references stay in one place; per-script layers.json defines their style).
     """
+
+    # plain class instead of a frozen @dataclass: Dynamo's CPython3 has no `dataclasses` module;
+    # keyword overrides (CrossDitchParams(step=10.0)) keep working
+    def __init__(self, **overrides: object) -> None:
+        for _k, _v in overrides.items():
+            if not hasattr(type(self), _k):
+                raise TypeError(f"unknown parameter '{_k}'")
+            setattr(self, _k, _v)
 
     # anchor_02 — axis
     min_segment: float = 6.0

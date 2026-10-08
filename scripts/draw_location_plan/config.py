@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
 
 from civil.utils import find_best_match, normalize, pk_to_sta
 from paths import CANALS_DIR, TYPES_FILE
@@ -22,8 +21,15 @@ TROUGH_TYPES: frozenset[int] = frozenset({9, 10, 11, 12})
 WIDENING_TRANS: float = 2.0
 
 
-@dataclass(frozen=True)
 class DrawingParams:
+
+    # plain class instead of a frozen @dataclass: Dynamo's CPython3 has no `dataclasses` module;
+    # keyword overrides (CrossDitchParams(step=10.0)) keep working
+    def __init__(self, **overrides: object) -> None:
+        for _k, _v in overrides.items():
+            if not hasattr(type(self), _k):
+                raise TypeError(f"unknown parameter '{_k}'")
+            setattr(self, _k, _v)
     step: float = 2.0
     station_tick_m: float = 10.0
     tick_half_len: float = 1.5
