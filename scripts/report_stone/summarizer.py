@@ -5,7 +5,6 @@ import clr
 clr.AddReference("AecPropDataMgd")
 clr.AddReference("acdbmgd")
 
-import csv
 import os
 import traceback
 from collections import defaultdict
@@ -21,6 +20,19 @@ from paths import REPORTS_DIR
 from .logger import Logger
 
 _STONE_COEF = 1.05
+
+
+def _write_csv(f, rows) -> None:
+    """`csv.writer(f, delimiter=";").writerows(rows)` -- Dynamo's CPython3 has no `csv` module."""
+
+    def cell(v) -> str:
+        t = "" if v is None else str(v)
+        if any(c in t for c in (";", '"', "\n", "\r")):
+            t = '"' + t.replace('"', '""') + '"'
+        return t
+
+    for row in rows:
+        f.write(";".join(cell(v) for v in row) + "\r\n")
 
 
 @contextmanager
@@ -172,12 +184,12 @@ class StoneSummarizer:
         out_path = os.path.join(REPORTS_DIR, "stone_summary.csv")
         try:
             with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-                csv.writer(f, delimiter=";").writerows(out_rows)
+                _write_csv(f, out_rows)
         except PermissionError:
             import datetime
 
             ts = datetime.datetime.now().strftime("%H%M%S")
             out_path = os.path.join(REPORTS_DIR, f"stone_summary_{ts}.csv")
             with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-                csv.writer(f, delimiter=";").writerows(out_rows)
+                _write_csv(f, out_rows)
         return out_path
