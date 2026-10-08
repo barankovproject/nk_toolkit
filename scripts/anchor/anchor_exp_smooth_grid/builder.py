@@ -33,7 +33,7 @@ from anchor_02_build_axis.axis import (
     median_centerline,
 )
 from anchor_03_build_grid.grid import clip_to_band
-from anchor_04_place_anchors.circles import fill_row, merge_overlaps, polyline_hits
+from anchor_04_place_anchors.circles import distribute_row, merge_overlaps, polyline_hits
 from anchor_core.config import CONFIG
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +88,11 @@ def _smooth_stations(pts, step):
         p1 = _point_at(pts, cum, d + _TAN_WIN)
         yield _point_at(pts, cum, d), _unit(p1[0] - p0[0], p1[1] - p0[1])
         d += step
+
+
+def fill_row(hits, poly, spacing):
+    """Simple row fill (the old `circles.fill_row`): only the gap filling of `distribute_row`, no relax step."""
+    return distribute_row(hits, poly, spacing, spacing * 1.2, 0.0, 0.0)
 
 
 class SmoothGridBuilder:
